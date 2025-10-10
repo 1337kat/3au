@@ -1,0 +1,157 @@
+--// ===========================================================
+--//   PAYLOAD0 • RIM DOT ARC LOGIC (PER-DISTANCE DOT CONTROL)
+--//   • Adds or subtracts dots per distance
+--//   • Keeps curvature and links consistent
+--// ===========================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local plr = Players.LocalPlayer
+local char = plr.Character or plr.CharacterAdded:Wait()
+local hrp = char:WaitForChild("HumanoidRootPart")
+
+-- === CONFIGURATION ===
+local PERFECT_DISTANCES = {54.97, 61.53, 68.10}
+local RING_ARC_DEGREES = 180
+local DEGREE_STEP = 6
+local DOT_COLOR = Color3.fromRGB(255, 0, 255)
+local DOT_MATERIAL = Enum.Material.Neon
+local DOT_RADIUS = 0.35
+local LINK_THICKNESS = 0.08
+local ACTIVE_RANGE = 200
+local RIM_SIZE = Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
+local HEIGHT_OFFSET = -18.2
+
+--// 🔧 Per-line dot adjustments (positive = extend, negative = subtract)
+--// Keys correspond to indexes in PERFECT_DISTANCES
+local ARC_ADJUSTMENTS = {
+	[1] = 12,   -- 54.97 → normal
+	[2] = -9, -- 61.53 → subtract 12 degrees worth of dots
+	[3] = -27,   -- 68.10 → normal
+}
+
+-- === INTERNAL STATE ===
+local RimDots = {}
+local RimModels = {}
+
+-- === Create custom arc with add/subtract logic ===
+local function createLinkedDots(rimPart, radius, extraDegrees)
+	local model = Instance.new("Model")
+	model.Name = "Payload0_AdjustedRimDots"
+	model.Parent = Workspace
+
+	local base = Instance.new("Part")
+	base.Anchored = true
+	base.CanCollide = false
+	base.Transparency = 1
+	base.Size = Vector3.one
+	base.Position = rimPart.Position
+	base.Parent = model
+
+	local forward = rimPart.CFrame.LookVector
+	local right = rimPart.CFrame.RightVector
+	local dotParts = {}
+
+	local startDeg = -RING_ARC_DEGREES / 2
+	local endDeg = RING_ARC_DEGREES / 2
+
+	-- Apply shortening or extension (extraDegrees may be negative)
+	startDeg -= extraDegrees
+	endDeg += extraDegrees
+
+	-- Build the dots
+	for deg = startDeg, endDeg, DEGREE_STEP do
+		local rad = math.rad(deg)
+		local offset = (forward * math.cos(rad) + right * math.sin(rad)) * radius
+
+		local sphere = Instance.new("Part")
+		sphere.Shape = Enum.PartType.Ball
+		sphere.Material = DOT_MATERIAL
+		sphere.Color = DOT_COLOR
+		sphere.Size = Vector3.new(DOT_RADIUS, DOT_RADIUS, DOT_RADIUS)
+		sphere.Anchored = true
+		sphere.CanCollide = false
+		sphere.Transparency = 0
+		sphere.Position = rimPart.Position + Vector3.new(offset.X, HEIGHT_OFFSET, offset.Z)
+		sphere.Parent = model
+
+		table.insert(dotParts, sphere)
+	end
+
+	-- Connect with neon links
+	for i = 1, #dotParts - 1 do
+		local a = dotParts[i]
+		local b = dotParts[i + 1]
+		local dist = (a.Position - b.Position).Magnitude
+
+		local link = Instance.new("Part")
+		link.Anchored = true
+		link.CanCollide = false
+		link.Material = DOT_MATERIAL
+		link.Color = DOT_COLOR
+		link.Transparency = 0
+		link.Size = Vector3.new(LINK_THICKNESS, LINK_THICKNESS, dist)
+		link.CFrame = CFrame.new(a.Position, b.Position) * CFrame.new(0, 0, -dist / 2)
+		link.Parent = model
+	end
+
+	return model
+end
+
+-- === Rim registration ===
+local function registerRim(rim)
+	if RimDots[rim] then return end
+	RimDots[rim] = true
+
+	local rimModel = Instance.new("Model")
+	rimModel.Name = "Payload0_RimDots_" .. rim:GetDebugId()
+	rimModel.Parent = Workspace
+
+	for i, dist in ipairs(PERFECT_DISTANCES) do
+		local extra = ARC_ADJUSTMENTS[i] or 0
+		local model = createLinkedDots(rim, dist, extra)
+		model.Parent = rimModel
+	end
+
+	RimModels[rim] = rimModel
+end
+
+local function unregisterRim(rim)
+	if RimModels[rim] then RimModels[rim]:Destroy() end
+	RimDots[rim] = nil
+	RimModels[rim] = nil
+end
+
+-- === Rim auto-detect ===
+Workspace.DescendantAdded:Connect(function(o)
+	if o:IsA("BasePart") and o.Name == "Rim" and o.Size == RIM_SIZE then
+		registerRim(o)
+	end
+end)
+Workspace.DescendantRemoving:Connect(function(o)
+	if RimDots[o] then unregisterRim(o) end
+end)
+for _, v in ipairs(Workspace:GetDescendants()) do
+	if v:IsA("BasePart") and v.Name == "Rim" and v.Size == RIM_SIZE then
+		registerRim(v)
+	end
+end
+
+-- === Range visibility logic ===
+RunService.RenderStepped:Connect(function()
+	for rim, model in pairs(RimModels) do
+		if rim:IsDescendantOf(Workspace) then
+			local dist = (rim.Position - hrp.Position).Magnitude
+			local active = dist <= ACTIVE_RANGE
+			for _, part in ipairs(model:GetDescendants()) do
+				if part:IsA("Part") then
+					part.Transparency = active and 0 or 1
+				end
+			end
+		end
+	end
+end)
+
+print("[PAYLOAD0] Rim dots active with per-line adjustments.")
