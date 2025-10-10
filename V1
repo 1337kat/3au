@@ -1,0 +1,350 @@
+--// ===========================================================
+--//   PAYLOAD0 • COMPLETE AIM + ALIGN SYSTEM (VISUALLESS MODE)
+--//   Auto Aim Basketball Shooter + Soft Wall Align Assist
+--//   Instant ON/OFF + Visual Toggle (V / O)
+--// ===========================================================
+
+--// === SERVICES ===
+local Players = game:GetService('Players')
+local UserInputService = game:GetService('UserInputService')
+local RunService = game:GetService('RunService')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local CoreGui = game:GetService('CoreGui')
+local Camera = workspace.CurrentCamera
+
+local plr = Players.LocalPlayer
+local char = plr.Character or plr.CharacterAdded:Wait()
+local remotes = ReplicatedStorage:WaitForChild('Remotes')
+local shootRemote = remotes:WaitForChild('Shoot')
+
+--// === STATE ===
+getgenv().PAYLOAD0_SYSTEM_ACTIVE = true
+local VisualsEnabled = true -- everything visual
+local shootKey = nil
+local selectedRim = nil
+
+--// === ALIGN CONFIG ===
+local PERFECT_DISTANCE = 54.97
+local CLAMP_RADIUS = 1
+local ACTIVE_RANGE = 90
+local MAX_PUSH = 0.06
+local DAMPING = 0.9
+local COLOR_LOCKED = Color3.fromRGB(0, 255, 100)
+local COLOR_ACTIVE = Color3.fromRGB(255, 230, 70)
+local COLOR_IDLE = Color3.fromRGB(255, 70, 70)
+
+--// === NOTIFY ===
+local function notify(msg, color)
+    if not VisualsEnabled then
+        return
+    end
+    local gui = Instance.new('ScreenGui')
+    gui.ResetOnSpawn = false
+    gui.Parent = CoreGui
+    local label = Instance.new('TextLabel')
+    label.Parent = gui
+    label.AnchorPoint = Vector2.new(0.5, 0.5)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = color or Color3.new(1, 1, 1)
+    label.Font = Enum.Font.Code
+    label.TextSize = 26
+    label.Text = msg
+    label.Position = UDim2.new(0.5, 0, 0.9, 0)
+    task.delay(1.3, function()
+        gui:Destroy()
+    end)
+end
+
+--// === DOT ESP ===
+local RimDots = {}
+local RimSize =
+    Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
+
+local function addRimDot(rim)
+    local dot = Drawing.new('Circle')
+    dot.Radius = 4
+    dot.Filled = true
+    dot.Color = Color3.new(1, 0, 0)
+    RimDots[rim] = dot
+end
+
+local function removeRimDot(rim)
+    if RimDots[rim] then
+        RimDots[rim]:Remove()
+        RimDots[rim] = nil
+    end
+    if selectedRim == rim then
+        selectedRim = nil
+    end
+end
+
+RunService.RenderStepped:Connect(function()
+    if not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+        for _, dot in pairs(RimDots) do
+            dot.Visible = false
+        end
+        return
+    end
+    for rim, dot in pairs(RimDots) do
+        if rim:IsDescendantOf(workspace) and VisualsEnabled then
+            local pos, on = Camera:WorldToViewportPoint(rim.Position)
+            dot.Position = Vector2.new(pos.X, pos.Y)
+            dot.Visible = on
+            if rim == selectedRim then
+                dot.Color = Color3.new(1, 1, 0)
+                dot.Radius = 6
+            else
+                dot.Color = Color3.new(1, 0, 0)
+                dot.Radius = 4
+            end
+        else
+            dot.Visible = false
+        end
+    end
+end)
+
+workspace.DescendantAdded:Connect(function(o)
+    if o:IsA('BasePart') and o.Name == 'Rim' and o.Size == RimSize then
+        addRimDot(o)
+    end
+end)
+workspace.DescendantRemoving:Connect(removeRimDot)
+for _, v in ipairs(workspace:GetDescendants()) do
+    if v:IsA('BasePart') and v.Name == 'Rim' and v.Size == RimSize then
+        addRimDot(v)
+    end
+end
+
+--// === AUTO RIM LOCK ===
+task.spawn(function()
+    while task.wait(0.1) do
+        if not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+            continue
+        end
+        local root = plr.Character
+            and plr.Character:FindFirstChild('HumanoidRootPart')
+        if not root then
+            continue
+        end
+        local bestRim, bestDist = nil, 85
+        for rim in pairs(RimDots) do
+            if rim:IsDescendantOf(workspace) then
+                local dist = (rim.Position - root.Position).Magnitude
+                if dist < bestDist then
+                    local _, on = Camera:WorldToViewportPoint(rim.Position)
+                    if on then
+                        bestRim, bestDist = rim, dist
+                    end
+                end
+            end
+        end
+        if bestRim and bestRim ~= selectedRim then
+            selectedRim = bestRim
+            notify('🎯 Auto-Locked Nearest Rim', Color3.fromRGB(255, 230, 0))
+        end
+    end
+end)
+
+--// === TOGGLES ===
+UserInputService.InputBegan:Connect(function(i, gp)
+    if gp then
+        return
+    end
+    if i.KeyCode == Enum.KeyCode.O then
+        VisualsEnabled = not VisualsEnabled
+        if not VisualsEnabled then
+            for _, dot in pairs(RimDots) do
+                dot.Visible = false
+            end
+            local hl = CoreGui:FindFirstChild('PerfectRangeGlow')
+            if hl then
+                hl.Enabled = false
+            end
+        end
+    elseif i.KeyCode == Enum.KeyCode.V then
+        getgenv().PAYLOAD0_SYSTEM_ACTIVE = not getgenv().PAYLOAD0_SYSTEM_ACTIVE
+        if VisualsEnabled then
+            notify(
+                getgenv().PAYLOAD0_SYSTEM_ACTIVE and 'System ON' or 'System OFF',
+                getgenv().PAYLOAD0_SYSTEM_ACTIVE and Color3.new(0, 1, 0)
+                    or Color3.new(1, 0, 0)
+            )
+        end
+    end
+end)
+
+--// === CAPTURE SHOOT KEY ===
+local old
+old = hookmetamethod(game, '__namecall', function(self, ...)
+    local m = getnamecallmethod()
+    if m == 'FireServer' and self == shootRemote then
+        local args = { ... }
+        if type(args[3]) == 'string' and not shootKey then
+            shootKey = args[3]
+            notify('Shoot key captured!', Color3.new(0, 1, 0))
+        end
+    end
+    return old(self, ...)
+end)
+
+--// === SHOOTING LOGIC ===
+local lastTick, moveOffset = 0, Vector3.zero
+local function computeOffset()
+    if tick() - lastTick > 0.1 then
+        local hum = plr.Character
+            and plr.Character:FindFirstChildOfClass('Humanoid')
+        local moveDir = (hum and hum.MoveDirection) or Vector3.zero
+        moveOffset = Vector3.new(moveDir.X * 1.5, 0, moveDir.Z * 1.5)
+        lastTick = tick()
+    end
+    return moveOffset
+end
+
+local function computeArc(dist)
+    return Vector3.new(0, 43 + (dist / 15), 0)
+end
+
+local function smartAim(rim)
+    local offset = computeOffset()
+    local root = plr.Character:FindFirstChild('HumanoidRootPart')
+    if not root then
+        return rim.Position
+    end
+    local dist = (root.Position - rim.Position).Magnitude
+    return rim.Position + computeArc(dist) - offset
+end
+
+local function shootAtTarget()
+    if not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+        return
+    end
+    if not (selectedRim and selectedRim:IsDescendantOf(workspace)) then
+        return notify('❌ No Target', Color3.new(1, 0.3, 0.3))
+    end
+    if not shootKey then
+        return notify('⚙️ Shoot Key Missing', Color3.new(1, 0.8, 0.3))
+    end
+
+    local char = plr.Character
+    if not char then
+        return
+    end
+    local head, root = char:FindFirstChild('Head'), char.PrimaryPart
+    if not (head and root) then
+        return
+    end
+
+    local aimPos = smartAim(selectedRim)
+    local dir = (aimPos - head.Position).Unit
+    local shootFrom = root.Position + dir * 3.8
+    if shootFrom.Y - root.Position.Y < 4 then
+        shootFrom = root.Position + dir * 4
+    end
+
+    shootRemote:FireServer(aimPos, shootFrom, shootKey)
+    notify('🏀 Shot Fired!', Color3.new(0, 1, 0))
+end
+
+UserInputService.InputBegan:Connect(function(i, gp)
+    if gp or not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+        return
+    end
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        shootAtTarget()
+    end
+end)
+
+--// === ALIGN ASSIST ===
+local hl = CoreGui:FindFirstChild('PerfectRangeGlow')
+    or Instance.new('Highlight')
+hl.Name = 'PerfectRangeGlow'
+hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+hl.FillTransparency = 0.25
+hl.OutlineTransparency = 0
+hl.Adornee = plr.Character
+hl.Parent = CoreGui
+hl.Enabled = true
+
+local rims = {}
+for _, v in ipairs(workspace:GetDescendants()) do
+    if v:IsA('BasePart') and v.Name == 'Lol' and v.Parent.Name == 'Rim' then
+        table.insert(rims, v)
+    end
+end
+
+local function nearestRim(rootPos)
+    local nearest, nearestDist
+    for _, rim in ipairs(rims) do
+        if rim:IsDescendantOf(workspace) then
+            local rimXZ = Vector3.new(rim.Position.X, 0, rim.Position.Z)
+            local dist = (rimXZ - Vector3.new(rootPos.X, 0, rootPos.Z)).Magnitude
+            if not nearestDist or dist < nearestDist then
+                nearest, nearestDist = rim, dist
+            end
+        end
+    end
+    return nearest, nearestDist
+end
+
+local smoothBias = Vector3.zero
+
+RunService.RenderStepped:Connect(function()
+    if not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+        hl.Enabled = false
+        return
+    else
+        hl.Enabled = VisualsEnabled
+    end
+
+    local char = plr.Character
+    local hum = char and char:FindFirstChildOfClass('Humanoid')
+    local root = char and char:FindFirstChild('HumanoidRootPart')
+    if not (hum and root) then
+        return
+    end
+
+    local rim, dist = nearestRim(root.Position)
+    if not rim or dist > ACTIVE_RANGE then
+        hl.Enabled = false
+        smoothBias = Vector3.zero
+        return
+    end
+
+    local rimXZ = Vector3.new(rim.Position.X, 0, rim.Position.Z)
+    local rootXZ = Vector3.new(root.Position.X, 0, root.Position.Z)
+    local dirToRim = (rimXZ - rootXZ).Unit
+    local diff = dist - PERFECT_DISTANCE
+    local absDiff = math.abs(diff)
+
+    local desired = Vector3.zero
+    if absDiff < CLAMP_RADIUS then
+        local strength = (CLAMP_RADIUS - absDiff) / CLAMP_RADIUS
+        local direction = -dirToRim * diff
+        desired = direction.Unit * math.min(strength * MAX_PUSH, MAX_PUSH)
+    end
+
+    smoothBias = smoothBias * DAMPING + desired * (1 - DAMPING)
+    root.CFrame += Vector3.new(smoothBias.X, 0, smoothBias.Z)
+
+    if not VisualsEnabled then
+        return
+    end
+    if absDiff <= 0.10 then
+        hl.FillColor = COLOR_LOCKED
+        hl.OutlineColor = COLOR_LOCKED
+    elseif absDiff < CLAMP_RADIUS then
+        hl.FillColor = COLOR_ACTIVE
+        hl.OutlineColor = COLOR_ACTIVE
+    else
+        hl.FillColor = COLOR_IDLE
+        hl.OutlineColor = COLOR_IDLE
+    end
+end)
+
+plr.CharacterAdded:Connect(function(c)
+    task.wait(0.5)
+    hl.Adornee = c
+end)
+
+print('[🏀 PAYLOAD0 COMPLETE SYSTEM LOADED]')
+print('[V] Toggle full system | [O] Toggle all visuals | [LMB] Shoot')
