@@ -1,0 +1,143 @@
+-- === ALIGN ASSIST (MULTI ZONE + ONE-WAY PUSH WITH A/D SINGLE-KEY RULE) ===
+local hl = CoreGui:FindFirstChild('PerfectRangeGlow') or Instance.new('Highlight')
+hl.Name = 'PerfectRangeGlow'
+hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+hl.FillTransparency = 0.25
+hl.OutlineTransparency = 0
+hl.Adornee = plr.Character
+hl.Parent = CoreGui
+hl.Enabled = true
+
+-- Track movement key states
+local moveKeys = {
+	W = false,
+	A = false,
+	S = false,
+	D = false
+}
+
+-- Update key states
+UserInputService.InputBegan:Connect(function(i, gp)
+	if gp then return end
+	local key = i.KeyCode
+	if key == Enum.KeyCode.W then moveKeys.W = true end
+	if key == Enum.KeyCode.A then moveKeys.A = true end
+	if key == Enum.KeyCode.S then moveKeys.S = true end
+	if key == Enum.KeyCode.D then moveKeys.D = true end
+end)
+
+UserInputService.InputEnded:Connect(function(i, gp)
+	if gp then return end
+	local key = i.KeyCode
+	if key == Enum.KeyCode.W then moveKeys.W = false end
+	if key == Enum.KeyCode.A then moveKeys.A = false end
+	if key == Enum.KeyCode.S then moveKeys.S = false end
+	if key == Enum.KeyCode.D then moveKeys.D = false end
+end)
+
+-- Utility to check if push should activate
+local function shouldPush()
+	-- Count how many movement keys are currently pressed
+	local count = 0
+	for _, v in pairs(moveKeys) do
+		if v then count += 1 end
+	end
+
+	-- Must be exactly 1 key pressed AND it must be A or D
+	if count == 1 and (moveKeys.A or moveKeys.D) then
+		return true
+	end
+	return false
+end
+
+-- Find rims
+local rims = {}
+for _, v in ipairs(workspace:GetDescendants()) do
+	if v:IsA('BasePart') and v.Name == 'Lol' and v.Parent.Name == 'Rim' then
+		table.insert(rims, v)
+	end
+end
+
+local function nearestRim(rootPos)
+	local nearest, nearestDist
+	for _, rim in ipairs(rims) do
+		if rim:IsDescendantOf(workspace) then
+			local rimXZ = Vector3.new(rim.Position.X, 0, rim.Position.Z)
+			local dist = (rimXZ - Vector3.new(rootPos.X, 0, rootPos.Z)).Magnitude
+			if not nearestDist or dist < nearestDist then
+				nearest, nearestDist = rim, dist
+			end
+		end
+	end
+	return nearest, nearestDist
+end
+
+local function getNearestPerfectDistance(current)
+	local nearest, smallestDiff
+	for _, pd in ipairs(PERFECT_DISTANCES) do
+		local diff = math.abs(pd - current)
+		if not smallestDiff or diff < smallestDiff then
+			nearest, smallestDiff = pd, diff
+		end
+	end
+	return nearest
+end
+
+-- === PUSH LOOP ===
+local smoothBias = Vector3.zero
+RunService.RenderStepped:Connect(function()
+	if not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+		hl.Enabled = false
+		return
+	else
+		hl.Enabled = VisualsEnabled
+	end
+
+	local char = plr.Character
+	local hum = char and char:FindFirstChildOfClass('Humanoid')
+	local root = char and char:FindFirstChild('HumanoidRootPart')
+	if not (hum and root) then return end
+
+	local rim, dist = nearestRim(root.Position)
+	if not rim or dist > ACTIVE_RANGE then
+		hl.Enabled = false
+		smoothBias = Vector3.zero
+		return
+	end
+
+	local target = getNearestPerfectDistance(dist)
+	local diff = dist - target
+	local absDiff = math.abs(diff)
+	local desired = Vector3.zero
+
+	-- === CONDITIONAL ONE-WAY PUSH (only when A or D held singly) ===
+	if shouldPush() and absDiff < CLAMP_RADIUS then
+		local strength = (CLAMP_RADIUS - absDiff) / CLAMP_RADIUS
+		local toRim = Vector3.new(rim.Position.X, 0, rim.Position.Z) - Vector3.new(root.Position.X, 0, root.Position.Z)
+		local distSign = math.sign(diff) -- positive = too far, negative = too close
+		if distSign > 0 then
+			local pushDir = -toRim.Unit -- push outward
+			desired = pushDir * math.min(strength * MAX_PUSH, MAX_PUSH)
+		end
+	end
+
+	smoothBias = smoothBias * DAMPING + desired * (1 - DAMPING)
+	root.CFrame += Vector3.new(smoothBias.X, 0, smoothBias.Z)
+
+	if not VisualsEnabled then return end
+	if absDiff <= 0.10 then
+		hl.FillColor, hl.OutlineColor = COLOR_LOCKED, COLOR_LOCKED
+	elseif absDiff < CLAMP_RADIUS then
+		hl.FillColor, hl.OutlineColor = COLOR_ACTIVE, COLOR_ACTIVE
+	else
+		hl.FillColor, hl.OutlineColor = COLOR_IDLE, COLOR_IDLE
+	end
+end)
+
+plr.CharacterAdded:Connect(function(c)
+	task.wait(0.5)
+	hl.Adornee = c
+end)
+
+print('[🏀 PAYLOAD0 COMPLETE SYSTEM LOADED — MULTI-ZONE ONE-WAY MODE + SINGLE-KEY PUSH]')
+print('[V] Toggle system | [O] Toggle visuals | [LMB] Shoot')
