@@ -1,0 +1,124 @@
+--// =========================================================
+--//   PAYLOAD0 • MASTER RESTORABLE REMOVER [AUTO-ACTIVE + O]
+--//   • Removes or restores both:
+--//        → Unions (size match or Court+Lines path)
+--//        → Nets (any part/model/folder named "Net")
+--//   • Starts ACTIVE by default (auto-removes instantly)
+--//   • Press [O] anytime to toggle hide ↔ restore
+--//   • All deletions are memory-safe and reversible
+--// =========================================================
+
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+-- === CONFIGURATION ===
+local TOGGLE_KEY = Enum.KeyCode.O
+local TARGET_SIZES = {
+	Vector3.new(14.074419021606445, 0.1991105079650879, 68.00189208984375),
+	Vector3.new(20.78681182861328, 0.10193014144897461, 67.00210571289062)
+}
+local SIZE_TOLERANCE = 0.0005
+
+-- === STATE ===
+local removalEnabled = true -- ✅ Start ACTIVE by default
+local removedObjects = {}
+
+-- === HELPERS ===
+local function sizeMatchesAny(size: Vector3)
+	for _, target in ipairs(TARGET_SIZES) do
+		if math.abs(size.X - target.X) <= SIZE_TOLERANCE
+			and math.abs(size.Y - target.Y) <= SIZE_TOLERANCE
+			and math.abs(size.Z - target.Z) <= SIZE_TOLERANCE then
+			return true
+		end
+	end
+	return false
+end
+
+local function isInsideCourtAndLines(obj)
+	local hasCourt, hasLines = false, false
+	local current = obj
+	while current do
+		local name = current.Name:lower()
+		if string.find(name, "court") then
+			hasCourt = true
+		elseif string.find(name, "lines") then
+			hasLines = true
+		end
+		current = current.Parent
+	end
+	return hasCourt and hasLines
+end
+
+local function shouldRemove(obj)
+	if obj:IsA("UnionOperation") and (sizeMatchesAny(obj.Size) or isInsideCourtAndLines(obj)) then
+		return true
+	end
+	if (obj:IsA("BasePart") or obj:IsA("Model") or obj:IsA("Folder")) and obj.Name:lower() == "net" then
+		return true
+	end
+	return false
+end
+
+local function cloneData(obj)
+	local clone = obj:Clone()
+	clone.Parent = nil
+	return { instance = clone, parent = obj.Parent }
+end
+
+local function removeMatchingObjects(container)
+	for _, descendant in ipairs(container:GetDescendants()) do
+		if shouldRemove(descendant) then
+			table.insert(removedObjects, cloneData(descendant))
+			print("[Payload0] Removed:", descendant:GetFullName())
+			descendant:Destroy()
+		end
+	end
+end
+
+local function restoreObjects()
+	for _, data in ipairs(removedObjects) do
+		if data.instance and data.parent then
+			data.instance.Parent = data.parent
+		end
+	end
+	print("[Payload0] Restored", #removedObjects, "objects (Unions + Nets).")
+	removedObjects = {}
+end
+
+-- === TOGGLE ===
+local function toggleRemoval()
+	removalEnabled = not removalEnabled
+	if removalEnabled then
+		print("[Payload0] REMOVER: ACTIVE — All matching Unions + Nets removed (Press O to restore)")
+		removeMatchingObjects(Workspace)
+	else
+		print("[Payload0] REMOVER: RESTORING — All Unions + Nets restored (Press O to re-hide)")
+		restoreObjects()
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == TOGGLE_KEY then
+		toggleRemoval()
+	end
+end)
+
+-- === AUTO WATCHER (when active) ===
+Workspace.DescendantAdded:Connect(function(obj)
+	if removalEnabled and shouldRemove(obj) then
+		task.wait(0.05)
+		if obj and obj.Parent then
+			table.insert(removedObjects, cloneData(obj))
+			print("[Payload0] Auto-Removed new:", obj:GetFullName())
+			obj:Destroy()
+		end
+	end
+end)
+
+-- === INITIAL AUTO-RUN ===
+task.defer(function()
+	print("[Payload0] AUTO REMOVER ACTIVE — Cleaning Workspace...")
+	removeMatchingObjects(Workspace)
+end)
