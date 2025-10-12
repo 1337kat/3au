@@ -1,0 +1,425 @@
+local Players            = game:GetService("Players")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local RunService         = game:GetService("RunService")
+local UserInputService   = game:GetService("UserInputService")
+local TweenService       = game:GetService("TweenService")
+local CoreGui            = game:GetService("CoreGui")
+local Camera             = workspace.CurrentCamera
+
+local LP   = Players.LocalPlayer
+local Root = ReplicatedStorage:WaitForChild("ScreenWatch") -- server-populated nodes: <PlayerName>/Camera, FieldOfView
+
+--=== CONFIG ===
+local CFG = {
+	UIName        = "ForensicHUD_v3p6p1",
+	UpdateHz      = 6,          -- Eye + names refresh rate
+	PersistTime   = 0.5,        -- seconds to keep watchers "sticky", configurable
+	Match = {
+		PosEPS    = 1.5,        -- base positional tolerance (studs)
+		AngEPSDot = 0.95,       -- angular tolerance via dot(LookVector, LookVector)
+	},
+	LerpAlpha     = 0.55,       -- camera follow smoothing
+	ShowRelay     = true,       -- show "↳ relaying <name>" under status
+	FadeEnabled   = false,      -- Eye auto-hide; set true to enable fade watchdog
+	FadeDelay     = 1.5,        -- delay before fade (if enabled)
+	-- Colors
+	BG            = Color3.fromRGB(12, 12, 12),
+	Fg            = Color3.fromRGB(230, 230, 230),
+	Soft          = Color3.fromRGB(35, 35, 35),
+	Eye = {
+		Anchor    = UDim2.new(1, -150, 1, -100),
+		Bg        = Color3.fromRGB(25, 25, 25),
+		CachedBg  = Color3.fromRGB(30, 30, 40), -- NEW: slight tint when using cached data
+		Text      = Color3.fromRGB(240, 240, 240),
+		Pulse     = Color3.fromRGB(60, 255, 60),
+	},
+	List = {
+		Anchor    = UDim2.new(1, -150, 1, -150),
+		Size      = UDim2.fromOffset(220, 180),
+		Title     = "Spectators",
+		OpenOnStart = true,
+	},
+}
+
+--=== CLEANUP ===
+local old = CoreGui:FindFirstChild(CFG.UIName)
+if old then old:Destroy() end
+
+--=== GUI ROOT ===
+local gui = Instance.new("ScreenGui")
+gui.Name = CFG.UIName
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+--=== STATUS BAR (top center) ===
+local status = Instance.new("TextLabel")
+status.AnchorPoint = Vector2.new(0.5, 1)
+status.Position = UDim2.new(0.5, 0, 1, -22)
+status.Size = UDim2.fromOffset(460, 22)
+status.BackgroundColor3 = CFG.BG
+status.BackgroundTransparency = 0.2
+status.Font = Enum.Font.GothamBold
+status.TextColor3 = CFG.Fg
+status.TextSize = 14
+status.Text = "Watching: self"
+status.Parent = gui
+Instance.new("UICorner", status).CornerRadius = UDim.new(0, 6)
+
+local subStatus = Instance.new("TextLabel")
+subStatus.AnchorPoint = Vector2.new(0.5, 1)
+subStatus.Position = UDim2.new(0.5, 0, 1, -2)
+subStatus.Size = UDim2.fromOffset(460, 18)
+subStatus.BackgroundTransparency = 1
+subStatus.Font = Enum.Font.Gotham
+subStatus.TextColor3 = Color3.fromRGB(180, 180, 180)
+subStatus.TextSize = 13
+subStatus.Visible = false
+subStatus.Parent = gui
+
+--=== EYE HUD (bottom-right) ===
+local eyeFrame = Instance.new("Frame")
+eyeFrame.AnchorPoint = Vector2.new(1, 1)
+eyeFrame.Position = CFG.Eye.Anchor
+eyeFrame.Size = UDim2.fromOffset(180, 44)
+eyeFrame.BackgroundColor3 = CFG.Eye.Bg
+eyeFrame.BackgroundTransparency = 0.15
+eyeFrame.Parent = gui
+Instance.new("UICorner", eyeFrame).CornerRadius = UDim.new(0, 8)
+
+local eyeLabel = Instance.new("TextLabel")
+eyeLabel.Size = UDim2.fromScale(1, 1)
+eyeLabel.BackgroundTransparency = 1
+eyeLabel.Font = Enum.Font.GothamBold
+eyeLabel.TextColor3 = CFG.Eye.Text
+eyeLabel.TextXAlignment = Enum.TextXAlignment.Center
+eyeLabel.TextYAlignment = Enum.TextYAlignment.Center
+eyeLabel.TextSize = 16
+eyeLabel.Text = "👁  Spectators: 0"
+eyeLabel.Parent = eyeFrame
+
+--=== NAMES PANEL (toggle with [O]) ===
+local namesPanel = Instance.new("Frame")
+namesPanel.AnchorPoint = Vector2.new(1, 1)
+namesPanel.Position = CFG.List.Anchor
+namesPanel.Size = CFG.List.Size
+namesPanel.BackgroundColor3 = CFG.Eye.Bg
+namesPanel.BackgroundTransparency = 0.1
+namesPanel.Visible = CFG.List.OpenOnStart
+namesPanel.Parent = gui
+Instance.new("UICorner", namesPanel).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -12, 0, 24)
+title.Position = UDim2.new(0, 6, 0, 6)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = CFG.Fg
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextSize = 14
+title.Text = "👁  "..CFG.List.Title
+title.Parent = namesPanel
+
+local line = Instance.new("Frame")
+line.Size = UDim2.new(1, -12, 0, 1)
+line.Position = UDim2.new(0, 6, 0, 30)
+line.BackgroundColor3 = CFG.Soft
+line.BorderSizePixel = 0
+line.Parent = namesPanel
+
+local listHolder = Instance.new("ScrollingFrame")
+listHolder.Size = UDim2.new(1, -12, 1, -40)
+listHolder.Position = UDim2.new(0, 6, 0, 36)
+listHolder.BackgroundTransparency = 1
+listHolder.BorderSizePixel = 0
+listHolder.CanvasSize = UDim2.new(0, 0, 0, 0)
+listHolder.ScrollBarThickness = 6
+listHolder.Parent = namesPanel
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = listHolder
+
+local function setCanvas()
+	listHolder.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y)
+end
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(setCanvas)
+
+--=== SPECTATE REGISTRY (event-driven) ===
+local SpectateMap = {} -- [watcherUserId] = {target=Player, lastSeen=tick()}
+
+local function SetSpectate(watcher, target)
+	if not watcher then return end
+	if target then
+		SpectateMap[watcher.UserId] = { target = target, lastSeen = tick() }
+	else
+		SpectateMap[watcher.UserId] = nil
+	end
+end
+
+--=== CAMERA INFERENCE (hybrid fallback) ===
+local function nodeFor(player)
+	return Root:FindFirstChild(player and player.Name or "")
+end
+
+local function cameraValue(player)
+	local n = nodeFor(player) if not n then return nil end
+	local c = n:FindFirstChild("Camera") return c and c.Value or nil
+end
+
+local function camRoughMatch(aCF, bCF)
+	if not (aCF and bCF) then return false end
+	local distance = (aCF.Position - bCF.Position).Magnitude
+	local dynamicPosEPS = CFG.Match.PosEPS * (1 + distance / 50) -- NEW: Scale PosEPS with distance
+	local posOk = distance <= dynamicPosEPS
+	local angDot = aCF.LookVector:Dot(bCF.LookVector)
+	local angOk = angDot >= CFG.Match.AngEPSDot
+	return posOk and angOk
+end
+
+--=== HYBRID WATCHERS CACHE (anti-flicker) ===
+local WatcherCache = {} -- [targetUserId] = { names={}, lastUpdate=tick() }
+
+local function whoIsWatchingHybrid(target)
+	local now = tick()
+	local targetId = target.UserId
+	-- Clamp PersistTime for safety
+	local persistTime = math.clamp(CFG.PersistTime, 0.1, 2.0) -- NEW: Configurable with limits
+	-- Check cache freshness
+	local cached = WatcherCache[targetId]
+	if cached and (now - cached.lastUpdate) < persistTime then
+		-- NEW: Tint Eye HUD when using cache
+		eyeFrame.BackgroundColor3 = CFG.Eye.CachedBg
+		return cached.names
+	end
+	-- Reset to default background when updating
+	eyeFrame.BackgroundColor3 = CFG.Eye.Bg
+
+	local list = {}
+	local tgtCF = cameraValue(target)
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= target then
+			local rec = SpectateMap[p.UserId]
+			if rec and rec.target == target and (now - rec.lastSeen) < persistTime then
+				table.insert(list, p.Name)
+			else
+				local pc = cameraValue(p)
+				if camRoughMatch(pc, tgtCF) then
+					table.insert(list, p.Name)
+				end
+			end
+		end
+	end
+
+	table.sort(list, function(a, b) return a:lower() < b:lower() end)
+	WatcherCache[targetId] = { names = list, lastUpdate = now }
+	return list
+end
+
+--=== RELAY CHAIN DETECTION ===
+local function detectRelayFor(player)
+	local rec = SpectateMap[player.UserId]
+	if rec and rec.target then return rec.target.Name end
+
+	local myCF = cameraValue(player)
+	if not myCF then return nil end
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= player then
+			local oCF = cameraValue(other)
+			if camRoughMatch(myCF, oCF) then
+				return other.Name
+			end
+		end
+	end
+	return nil
+end
+
+--=== PLAYER LIST / SPECTATE CONTROL ===
+local watching = nil
+local idx = 0
+local plist = {}
+
+local function rebuildList()
+	plist = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP then table.insert(plist, p) end
+	end
+	table.sort(plist, function(a, b) return a.Name:lower() < b.Name:lower() end)
+end
+rebuildList()
+Players.PlayerAdded:Connect(rebuildList)
+Players.PlayerRemoving:Connect(function(p)
+	rebuildList()
+	-- NEW: Targeted cache invalidation
+	SpectateMap[p.UserId] = nil
+	WatcherCache[p.UserId] = nil
+	for k, v in pairs(WatcherCache) do
+		local newNames = {}
+		for _, name in ipairs(v.names) do
+			if name ~= p.Name then
+				table.insert(newNames, name)
+			end
+		end
+		v.names = newNames
+		v.lastUpdate = 0 -- Force refresh
+	end
+end)
+
+local function resetSelf()
+	local ch = LP.Character or LP.CharacterAdded:Wait()
+	local hum = ch:FindFirstChildWhichIsA("Humanoid")
+	if hum then
+		Camera.CameraSubject = hum
+		Camera.CameraType = Enum.CameraType.Custom
+		status.Text = "Watching: self"
+		subStatus.Visible = false
+		watching = nil
+		SetSpectate(LP, nil)
+	end
+end
+
+local function watch(plr)
+	if not plr then return end
+	watching = plr
+	Camera.CameraType = Enum.CameraType.Scriptable
+	status.Text = "Watching: " .. plr.Name
+	SetSpectate(LP, plr)
+end
+
+local function nextPlayer()
+	if #plist == 0 then return end
+	idx += 1
+	if idx > #plist then idx = 1 end
+	watch(plist[idx])
+end
+
+--=== EYE + NAMES UPDATE LOOP ===
+local lastEyeNames = {}
+local lastChange = tick()
+local eyeFadeTween
+
+local function renderNames(list)
+	local same = (#list == #lastEyeNames)
+	if same then
+		for i = 1, #list do
+			if list[i] ~= lastEyeNames[i] then same = false break end
+		end
+	end
+	if same then return end
+
+	for _, c in ipairs(listHolder:GetChildren()) do
+		if c:IsA("TextLabel") then c:Destroy() end
+	end
+
+	for i, name in ipairs(list) do
+		local row = Instance.new("TextLabel")
+		row.Size = UDim2.new(1, -4, 0, 22)
+		row.BackgroundColor3 = Color3.fromRGB(20,20,20)
+		row.BackgroundTransparency = 0.2
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Font = Enum.Font.Gotham
+		row.TextColor3 = CFG.Fg
+		row.TextSize = 13
+		row.Text = "  • "..name
+		row.Parent = listHolder
+		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+	end
+	lastEyeNames = list
+	setCanvas()
+end
+
+task.spawn(function()
+	local dt = 1 / CFG.UpdateHz
+	while task.wait(dt) do
+		local watchers = whoIsWatchingHybrid(LP)
+		eyeLabel.Text = ("👁  Spectators: %d"):format(#watchers)
+
+		local joined = false
+		for _, w in ipairs(watchers) do
+			if not table.find(lastEyeNames, w) then joined = true break end
+		end
+		if joined then
+			if eyeFadeTween then eyeFadeTween:Cancel() end
+			TweenService:Create(eyeFrame, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+				{ BackgroundColor3 = CFG.Eye.Pulse }):Play()
+			task.delay(0.35, function()
+				TweenService:Create(eyeFrame, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ BackgroundColor3 = eyeFrame.BackgroundColor3 == CFG.Eye.CachedBg and CFG.Eye.CachedBg or CFG.Eye.Bg }):Play()
+			end)
+		end
+
+		if namesPanel.Visible then
+			renderNames(watchers)
+		else
+			lastEyeNames = watchers
+		end
+
+		if CFG.ShowRelay and watching then
+			local relay = detectRelayFor(watching)
+			if relay then
+				subStatus.Text = "↳ Currently spectating: "..relay
+				subStatus.Visible = true
+			else
+				subStatus.Visible = false
+			end
+			status.Text = "Watching: " .. watching.Name
+		else
+			if CFG.ShowRelay then
+				subStatus.Visible = false
+			end
+		end
+
+		if CFG.FadeEnabled then
+			lastChange = tick()
+			if not eyeFrame.Visible then
+				eyeFrame.Visible = true
+				eyeFrame.BackgroundTransparency = 0.15
+			end
+		end
+	end
+end)
+
+--=== OPTIONAL FADE WATCHDOG ===
+if CFG.FadeEnabled then
+	task.spawn(function()
+		while task.wait(0.25) do
+			if tick() - lastChange > CFG.FadeDelay and eyeFrame.Visible then
+				if eyeFadeTween then eyeFadeTween:Cancel() end
+				eyeFadeTween = TweenService:Create(eyeFrame, TweenInfo.new(0.4), { BackgroundTransparency = 1 })
+				eyeFadeTween:Play()
+				eyeFadeTween.Completed:Wait()
+				eyeFrame.Visible = false
+				eyeFrame.BackgroundTransparency = 0.15
+			end
+		end
+	end)
+end
+
+--=== CAMERA FOLLOW LOOP ===
+RunService.RenderStepped:Connect(function()
+	if not watching then return end
+	local node = nodeFor(watching) if not node then return end
+	local camV = node:FindFirstChild("Camera")
+	local fovV = node:FindFirstChild("FieldOfView")
+	if camV and fovV then
+		Camera.CFrame = Camera.CFrame:Lerp(camV.Value, CFG.LerpAlpha)
+		Camera.FieldOfView = fovV.Value
+		status.Text = "Watching: " .. watching.Name
+	end
+end)
+
+--=== KEYBINDS ===
+UserInputService.InputBegan:Connect(function(i, gp)
+	if gp then return end
+	local kc = i.KeyCode
+	if kc == Enum.KeyCode.N then
+		rebuildList()
+		nextPlayer()
+	elseif kc == Enum.KeyCode.P then
+		resetSelf()
+	elseif kc == Enum.KeyCode.O then
+		namesPanel.Visible = not namesPanel.Visible
+	end
+end)
