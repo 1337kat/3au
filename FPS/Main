@@ -1,11 +1,10 @@
 --// =========================================================
---//   PAYLOAD0 • MASTER RESTORABLE REMOVER [AUTO-ACTIVE]
---//   • Removes both:
+--//	NO KEYBINDS:
+--//   • Instantly removes:
 --//        → Unions (size match or Court+Lines path)
 --//        → Nets (any part/model/folder named "Net")
---//   • Auto-runs instantly and watches for new ones
---//   • Memory-safe, fully reversible on demand (no keybind)
---//   • Designed for performance + minimal overhead
+--//   • Runs ONCE on execution — no loops, no keybinds
+--//   • Minimal overhead, FPS-neutral
 --// =========================================================
 
 local Workspace = game:GetService("Workspace")
@@ -16,10 +15,6 @@ local TARGET_SIZES = {
 	Vector3.new(20.78681182861328, 0.10193014144897461, 67.00210571289062)
 }
 local SIZE_TOLERANCE = 0.0005
-
--- === STATE ===
-local removalEnabled = true
-local removedObjects = {}
 
 -- === HELPERS ===
 local function sizeMatchesAny(size: Vector3)
@@ -58,43 +53,9 @@ local function shouldRemove(obj)
 	return false
 end
 
-local function cloneData(obj)
-	local clone = obj:Clone()
-	clone.Parent = nil
-	return { instance = clone, parent = obj.Parent }
-end
-
-local function removeMatchingObjects(container)
-	for _, descendant in ipairs(container:GetDescendants()) do
-		if shouldRemove(descendant) then
-			table.insert(removedObjects, cloneData(descendant))
-			descendant:Destroy()
-		end
+-- === MAIN CLEAN ===
+for _, descendant in ipairs(Workspace:GetDescendants()) do
+	if shouldRemove(descendant) then
+		descendant:Destroy()
 	end
 end
-
-local function restoreObjects()
-	for _, data in ipairs(removedObjects) do
-		if data.instance and data.parent then
-			data.instance.Parent = data.parent
-		end
-	end
-	removedObjects = {}
-end
-
--- === AUTO WATCHER ===
-Workspace.DescendantAdded:Connect(function(obj)
-	if removalEnabled and shouldRemove(obj) then
-		task.wait(0.05)
-		if obj and obj.Parent then
-			table.insert(removedObjects, cloneData(obj))
-			obj:Destroy()
-		end
-	end
-end)
-
--- === INITIAL AUTO-RUN ===
-task.defer(function()
-	print("[Payload0] AUTO REMOVER ACTIVE — Cleaning Workspace...")
-	removeMatchingObjects(Workspace)
-end)
