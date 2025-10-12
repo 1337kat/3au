@@ -1,8 +1,8 @@
-## STREETBALL Silent Aimm (Includes Everything)🎯
+## STREETBALL Silent Aim 🎯
 ```lua
 loadstring(game:HttpGet(('https://pastefy.app/l8mosbbL/raw'),true))()
 ```
-## Spectate 🔎
+## Spectate 🔍
 ```lua
 loadstring(game:HttpGet(('https://pastefy.app/2nIXaq2X/raw'),true))()
 ```
