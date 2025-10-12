@@ -1,0 +1,358 @@
+--// =====================================================================================
+--//  FORENSIC SPECTATOR HUD [v3.6.3 • Mid-Right Edition]
+--//  • Event-driven Spectate Registry + hybrid inference (anti-flicker)
+--//  • 👁 Spectators HUD positioned middle-right of the screen
+--//  • "Watching: self" hidden but internally active
+--//  • Keys: [N] Next player • [P] Return to self • [O] Toggle Names Panel
+--// =====================================================================================
+
+--=== SERVICES ===
+local Players            = game:GetService("Players")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local RunService         = game:GetService("RunService")
+local UserInputService   = game:GetService("UserInputService")
+local TweenService       = game:GetService("TweenService")
+local CoreGui            = game:GetService("CoreGui")
+local Camera             = workspace.CurrentCamera
+
+local LP   = Players.LocalPlayer
+local Root = ReplicatedStorage:WaitForChild("ScreenWatch")
+
+--=== CONFIG ===
+local CFG = {
+	UIName        = "ForensicHUD_v3p6p3_MidRight",
+	UpdateHz      = 10,
+	PersistTime   = 2.0,
+	Match = {
+		PosEPS    = 5.0,
+		AngEPSDot = 0.85,
+	},
+	LerpAlpha     = 0.55,
+	ShowRelay     = true,
+	FadeEnabled   = false,
+	FadeDelay     = 1.5,
+	BG            = Color3.fromRGB(12, 12, 12),
+	Fg            = Color3.fromRGB(230, 230, 230),
+	Soft          = Color3.fromRGB(35, 35, 35),
+	Pulse         = Color3.fromRGB(60, 255, 60),
+	List = {
+		Anchor    = UDim2.new(1, -20, 0.5, -90), -- mid-right placement
+		Size      = UDim2.fromOffset(220, 180),
+		Title     = "Spectators",
+		OpenOnStart = true,
+	},
+}
+
+--=== CLEANUP ===
+local old = CoreGui:FindFirstChild(CFG.UIName)
+if old then old:Destroy() end
+
+--=== GUI ROOT ===
+local gui = Instance.new("ScreenGui")
+gui.Name = CFG.UIName
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+--=== STATUS BAR (hidden but functional) ===
+local status = Instance.new("TextLabel")
+status.AnchorPoint = Vector2.new(1, 0)
+status.Position = UDim2.new(1, -12, 0, 10)
+status.Size = UDim2.fromOffset(220, 22)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.GothamBold
+status.TextColor3 = CFG.Fg
+status.TextSize = 14
+status.Text = "Watching: self"
+status.Visible = false
+status.Parent = gui
+
+local subStatus = Instance.new("TextLabel")
+subStatus.AnchorPoint = Vector2.new(1, 0)
+subStatus.Position = UDim2.new(1, -12, 0, 32)
+subStatus.Size = UDim2.fromOffset(220, 18)
+subStatus.BackgroundTransparency = 1
+subStatus.Font = Enum.Font.Gotham
+subStatus.TextColor3 = Color3.fromRGB(180,180,180)
+subStatus.TextSize = 13
+subStatus.Visible = false
+subStatus.Parent = gui
+
+--=== NAMES PANEL (middle-right side) ===
+local namesPanel = Instance.new("Frame")
+namesPanel.AnchorPoint = Vector2.new(1, 0.5)
+namesPanel.Position = CFG.List.Anchor
+namesPanel.Size = CFG.List.Size
+namesPanel.BackgroundTransparency = 1
+namesPanel.Visible = CFG.List.OpenOnStart
+namesPanel.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -12, 0, 24)
+title.Position = UDim2.new(0, 6, 0, 6)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = CFG.Fg
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextSize = 14
+title.Text = "👁  "..CFG.List.Title..": 0"
+title.Parent = namesPanel
+
+local listHolder = Instance.new("ScrollingFrame")
+listHolder.Size = UDim2.new(1, -12, 1, -40)
+listHolder.Position = UDim2.new(0, 6, 0, 36)
+listHolder.BackgroundTransparency = 1
+listHolder.BorderSizePixel = 0
+listHolder.CanvasSize = UDim2.new(0, 0, 0, 0)
+listHolder.ScrollBarThickness = 6
+listHolder.Parent = namesPanel
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = listHolder
+
+local function setCanvas()
+	listHolder.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y)
+end
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(setCanvas)
+
+--=== SPECTATE REGISTRY ===
+local SpectateMap = {}
+
+local function SetSpectate(watcher, target)
+	if not watcher then return end
+	if target then
+		SpectateMap[watcher.UserId] = { target = target, lastSeen = tick(), confirmedTicks = 0 }
+	else
+		SpectateMap[watcher.UserId] = nil
+	end
+end
+
+--=== CAMERA INFERENCE ===
+local function nodeFor(player)
+	return Root:FindFirstChild(player and player.Name or "")
+end
+
+local function cameraValue(player)
+	local n = nodeFor(player) if not n then return nil end
+	local c = n:FindFirstChild("Camera") return c and c.Value or nil
+end
+
+local function camRoughMatch(aCF, bCF)
+	if not (aCF and bCF) then return false end
+	local distance = (aCF.Position - bCF.Position).Magnitude
+	local dynamicPosEPS = CFG.Match.PosEPS * (1 + distance / 20)
+	local posOk = distance <= dynamicPosEPS
+	local angDot = aCF.LookVector:Dot(bCF.LookVector)
+	local angOk = angDot >= CFG.Match.AngEPSDot
+	return posOk and angOk
+end
+
+--=== WATCHER CACHE ===
+local WatcherCache = {}
+
+local function whoIsWatchingHybrid(target)
+	local now = tick()
+	local targetId = target.UserId
+	local persistTime = math.clamp(CFG.PersistTime, 0.1, 5.0)
+	local cached = WatcherCache[targetId]
+	if cached and (now - cached.lastUpdate) < persistTime then
+		return cached.names
+	end
+
+	local list = {}
+	local tgtCF = cameraValue(target)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= target then
+			local rec = SpectateMap[p.UserId]
+			local isMatch = false
+			if rec and rec.target == target then
+				if (now - rec.lastSeen) < persistTime then
+					isMatch = true
+				end
+				rec.lastSeen = now
+				rec.confirmedTicks = (rec.confirmedTicks or 0) + 1
+			else
+				local pc = cameraValue(p)
+				if camRoughMatch(pc, tgtCF) then
+					isMatch = true
+					if rec then rec.confirmedTicks = (rec.confirmedTicks or 0) + 1 end
+				elseif rec then
+					if rec.confirmedTicks > 3 then
+						isMatch = true
+					else
+						rec.confirmedTicks = 0
+					end
+				end
+			end
+			if isMatch then table.insert(list, p.Name) end
+		end
+	end
+
+	table.sort(list, function(a,b) return a:lower()<b:lower() end)
+	WatcherCache[targetId] = { names = list, lastUpdate = now }
+	return list
+end
+
+--=== RELAY DETECTION ===
+local function detectRelayFor(player)
+	local rec = SpectateMap[player.UserId]
+	if rec and rec.target then return rec.target.Name end
+	local myCF = cameraValue(player)
+	if not myCF then return nil end
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= player then
+			local oCF = cameraValue(other)
+			if camRoughMatch(myCF, oCF) then
+				return other.Name
+			end
+		end
+	end
+	return nil
+end
+
+--=== PLAYER CONTROL ===
+local watching, idx, plist = nil, 0, {}
+
+local function rebuildList()
+	plist = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP then table.insert(plist, p) end
+	end
+	table.sort(plist, function(a,b) return a.Name:lower()<b.Name:lower() end)
+end
+rebuildList()
+
+Players.PlayerAdded:Connect(rebuildList)
+Players.PlayerRemoving:Connect(function(p)
+	rebuildList()
+	SpectateMap[p.UserId] = nil
+	WatcherCache[p.UserId] = nil
+	for _, v in pairs(WatcherCache) do
+		local newNames = {}
+		for _, name in ipairs(v.names) do
+			if name ~= p.Name then table.insert(newNames, name) end
+		end
+		v.names = newNames
+		v.lastUpdate = 0
+	end
+end)
+
+local function resetSelf()
+	local ch = LP.Character or LP.CharacterAdded:Wait()
+	local hum = ch:FindFirstChildWhichIsA("Humanoid")
+	if hum then
+		Camera.CameraSubject = hum
+		Camera.CameraType = Enum.CameraType.Custom
+		status.Text = "Watching: self"
+		status.Visible = false
+		watching = nil
+		SetSpectate(LP, nil)
+	end
+end
+
+local function watch(plr)
+	if not plr then return end
+	watching = plr
+	Camera.CameraType = Enum.CameraType.Scriptable
+	status.Text = "Watching: " .. plr.Name
+	SetSpectate(LP, plr)
+end
+
+local function nextPlayer()
+	if #plist == 0 then return end
+	idx += 1
+	if idx > #plist then idx = 1 end
+	watch(plist[idx])
+end
+
+--=== UPDATE LOOP ===
+local lastEyeNames = {}
+
+local function renderNames(list)
+	local same = (#list == #lastEyeNames)
+	if same then
+		for i = 1, #list do
+			if list[i] ~= lastEyeNames[i] then same = false break end
+		end
+	end
+	if same then return end
+
+	title.Text = ("👁  %s: %d"):format(CFG.List.Title, #list)
+
+	local joined = false
+	for _, w in ipairs(list) do
+		if not table.find(lastEyeNames, w) then joined = true break end
+	end
+	if joined then
+		title.TextColor3 = CFG.Pulse
+		task.delay(0.35, function() title.TextColor3 = CFG.Fg end)
+	end
+
+	for _, c in ipairs(listHolder:GetChildren()) do
+		if c:IsA("TextLabel") then c:Destroy() end
+	end
+
+	for _, name in ipairs(list) do
+		local row = Instance.new("TextLabel")
+		row.Size = UDim2.new(1, -4, 0, 22)
+		row.BackgroundTransparency = 1
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Font = Enum.Font.Gotham
+		row.TextColor3 = CFG.Fg
+		row.TextSize = 13
+		row.Text = "  • "..name
+		row.Parent = listHolder
+	end
+	lastEyeNames = list
+	setCanvas()
+end
+
+task.spawn(function()
+	local dt = 1 / CFG.UpdateHz
+	while task.wait(dt) do
+		local watchers = whoIsWatchingHybrid(LP)
+		if namesPanel.Visible then
+			renderNames(watchers)
+		else
+			local joined = false
+			for _, w in ipairs(watchers) do
+				if not table.find(lastEyeNames, w) then joined = true break end
+			end
+			if joined then
+				title.TextColor3 = CFG.Pulse
+				task.delay(0.35, function() title.TextColor3 = CFG.Fg end)
+			end
+			title.Text = ("👁  %s: %d"):format(CFG.List.Title, #watchers)
+			lastEyeNames = watchers
+		end
+	end
+end)
+
+--=== CAMERA FOLLOW LOOP ===
+RunService.RenderStepped:Connect(function()
+	if not watching then return end
+	local node = nodeFor(watching)
+	if not node then return end
+	local camV = node:FindFirstChild("Camera")
+	local fovV = node:FindFirstChild("FieldOfView")
+	if camV and fovV then
+		Camera.CFrame = Camera.CFrame:Lerp(camV.Value, CFG.LerpAlpha)
+		Camera.FieldOfView = fovV.Value
+	end
+end)
+
+--=== KEYBINDS ===
+UserInputService.InputBegan:Connect(function(i, gp)
+	if gp then return end
+	local kc = i.KeyCode
+	if kc == Enum.KeyCode.N then
+		rebuildList()
+		nextPlayer()
+	elseif kc == Enum.KeyCode.P then
+		resetSelf()
+	elseif kc == Enum.KeyCode.O then
+		namesPanel.Visible = not namesPanel.Visible
+	end
+end)
