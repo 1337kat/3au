@@ -1,0 +1,90 @@
+--// ==============================================================
+--//  PAYLOAD0 • MINIMAL SPECTATE PROMPT (AAA STYLE)
+--//  • Subtle, single-line instruction
+--//  • Press [N] to Spectate
+--//  • Auto-fades after 5s
+--// ==============================================================
+
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local UserInputService = game:GetService("UserInputService")
+
+-- CONFIG
+local ACCENT = Color3.fromRGB(120,180,255)
+local TEXT = Color3.fromRGB(240,240,240)
+local FADE_TIME = 0.4
+local DISPLAY_TIME = 5
+local GLOW_ID = "rbxassetid://1316045217"
+
+-- CLEANUP OLD
+if CoreGui:FindFirstChild("Payload0_SpectateHint") then
+	CoreGui.Payload0_SpectateHint:Destroy()
+end
+
+-- GUI ROOT
+local gui = Instance.new("ScreenGui")
+gui.Name = "Payload0_SpectateHint"
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+-- CONTAINER (center bottom)
+local frame = Instance.new("Frame")
+frame.BackgroundTransparency = 1
+frame.AnchorPoint = Vector2.new(0.5, 0.5)
+frame.Position = UDim2.new(0.5, 0, 0.9, 0)
+frame.Size = UDim2.fromOffset(300, 40)
+frame.Parent = gui
+
+-- GLOW BACKDROP
+local glow = Instance.new("ImageLabel")
+glow.Image = GLOW_ID
+glow.BackgroundTransparency = 1
+glow.ImageColor3 = ACCENT
+glow.ImageTransparency = 0.9
+glow.AnchorPoint = Vector2.new(0.5, 0.5)
+glow.Position = UDim2.fromScale(0.5, 0.5)
+glow.Size = UDim2.fromScale(1.8, 1.8)
+glow.ZIndex = 0
+glow.Parent = frame
+
+-- TEXT
+local label = Instance.new("TextLabel")
+label.BackgroundTransparency = 1
+label.Text = "Press  [N]  to Spectate"
+label.Font = Enum.Font.GothamBold
+label.TextSize = 20
+label.TextColor3 = TEXT
+label.AnchorPoint = Vector2.new(0.5, 0.5)
+label.Position = UDim2.fromScale(0.5, 0.5)
+label.TextTransparency = 1
+label.ZIndex = 2
+label.Parent = frame
+
+-- INTRO
+TweenService:Create(label, TweenInfo.new(FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
+TweenService:Create(glow, TweenInfo.new(FADE_TIME), {ImageTransparency = 0.8}):Play()
+
+-- REACTIVE PULSE
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.N then
+		local pulse = glow:Clone()
+		pulse.Parent = frame
+		pulse.ImageTransparency = 0.4
+		TweenService:Create(pulse, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.fromScale(2.5,2.5),
+			ImageTransparency = 1
+		}):Play()
+		Debris:AddItem(pulse, 0.5)
+	end
+end)
+
+-- AUTO FADE OUT
+task.delay(DISPLAY_TIME, function()
+	TweenService:Create(label, TweenInfo.new(FADE_TIME), {TextTransparency = 1}):Play()
+	TweenService:Create(glow, TweenInfo.new(FADE_TIME), {ImageTransparency = 1}):Play()
+	task.wait(FADE_TIME + 0.1)
+	gui:Destroy()
+end)
