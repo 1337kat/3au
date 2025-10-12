@@ -1,5 +1,5 @@
 --// =====================================================================================
---//  PAYLOAD0 • FORENSIC SPECTATOR HUD [v3.6.1 FULL TELEMETRY EDITION]
+--//  FORENSIC SPECTATOR HUD
 --//  • Industry-standard event-driven Spectate Registry + hybrid inference fallback
 --//  • Anti-flicker: persistence cache (0.5s default) + angular/positional tolerance
 --//  • 👁 Spectators HUD + live names list (scroll) + optional relay-chain line
@@ -20,7 +20,7 @@ local Root = ReplicatedStorage:WaitForChild("ScreenWatch") -- server-populated n
 
 --=== CONFIG ===
 local CFG = {
-	UIName        = "Payload0_ForensicHUD_v3p6p1",
+	UIName        = "ForensicHUD_v3p6p1",
 	UpdateHz      = 6,          -- Eye + names refresh rate
 	PersistTime   = 0.5,        -- seconds to keep watchers "sticky"
 	Match = {
@@ -430,5 +430,3 @@ UserInputService.InputBegan:Connect(function(i, gp)
 		namesPanel.Visible = not namesPanel.Visible
 	end
 end)
-
-print("[Payload0] Forensic HUD v3.6.1 • Telemetry Edition • Stable Spectators + Names • N=Next • P=Return • O=Names")
