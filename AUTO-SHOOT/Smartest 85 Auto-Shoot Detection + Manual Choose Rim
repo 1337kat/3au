@@ -26,7 +26,7 @@ local remotes    = ReplicatedStorage:WaitForChild('Remotes')
 local shootRemote= remotes:WaitForChild('Shoot')
 
 -- ====================== STATE ======================
-getgenv().AUTO_JUMP_ACTIVE   = false           -- T toggles this
+getgenv().AUTO_JUMP_ACTIVE   = false           -- F toggles this
 local SystemActive           = true            -- whole system ON by default
 local VisualsEnabled         = true
 local shootKey               = nil             -- captured from legit rc
