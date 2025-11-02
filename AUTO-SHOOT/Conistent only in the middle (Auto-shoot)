@@ -26,7 +26,7 @@ local shootKey: string? = nil
 local selectedRim: BasePart? = nil
 local activeNotifyGui
 
--- === CONFIGURATION === 
+-- === CONFIGURATION ===
 local PERFECT_DISTANCES = { 55.68, 62.24, 68.80 } -- Original: 55.65, 62.21, 68.77
 local CLAMP_RADIUS = 1
 local ACTIVE_RANGE_MAIN = 90
