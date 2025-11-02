@@ -1,5 +1,5 @@
 --// ================================================================
---//  FORENSIC HUD — Spectator Detector (Permanent Green Highlight)
+--//  FORENSIC HUD v3p6p3 — Mid-Right Spectator List (Blink-Then-Stay Green)
 --// ================================================================
 
 local Players            = game:GetService("Players")
@@ -29,9 +29,9 @@ local CFG = {
 	BG            = Color3.fromRGB(12, 12, 12),
 	Fg            = Color3.fromRGB(230, 230, 230),
 	Soft          = Color3.fromRGB(35, 35, 35),
-	Pulse         = Color3.fromRGB(60, 255, 60), -- permanent green
+	Pulse         = Color3.fromRGB(60, 255, 60), -- Bright green
 	List = {
-		Anchor    = UDim2.new(1, -20, 0.5, -90),
+		Anchor    = UDim2.new(1, -20, 0.5, -90), -- mid-right placement
 		Size      = UDim2.fromOffset(220, 180),
 		Title     = "Spectators",
 		OpenOnStart = true,
@@ -49,7 +49,7 @@ gui.IgnoreGuiInset = true
 gui.ResetOnSpawn = false
 gui.Parent = CoreGui
 
---=== STATUS ===
+--=== STATUS BAR (hidden but functional) ===
 local status = Instance.new("TextLabel")
 status.AnchorPoint = Vector2.new(1, 0)
 status.Position = UDim2.new(1, -12, 0, 10)
@@ -73,7 +73,7 @@ subStatus.TextSize = 13
 subStatus.Visible = false
 subStatus.Parent = gui
 
---=== NAMES PANEL ===
+--=== NAMES PANEL (middle-right side) ===
 local namesPanel = Instance.new("Frame")
 namesPanel.AnchorPoint = Vector2.new(1, 0.5)
 namesPanel.Position = CFG.List.Anchor
@@ -112,7 +112,7 @@ local function setCanvas()
 end
 layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(setCanvas)
 
---=== REGISTRY ===
+--=== SPECTATE REGISTRY ===
 local SpectateMap = {}
 
 local function SetSpectate(watcher, target)
@@ -146,7 +146,7 @@ local function camRoughMatch(aCF, bCF)
 	return posOk and angOk
 end
 
---=== CACHE ===
+--=== WATCHER CACHE ===
 local WatcherCache = {}
 
 local function whoIsWatchingHybrid(target)
@@ -187,7 +187,7 @@ local function whoIsWatchingHybrid(target)
 		end
 	end
 
-	table.sort(list, function(a,b) return a:lower() < b:lower() end)
+	table.sort(list, function(a,b) return a:lower()<b:lower() end)
 	WatcherCache[targetId] = { names = list, lastUpdate = now }
 	return list
 end
@@ -264,7 +264,7 @@ local function nextPlayer()
 	watch(plist[idx])
 end
 
---=== NAME RENDERER (Permanent Green) ===
+--=== HIGHLIGHTED NAME RENDERER (Blink + Stay Green) ===
 local lastEyeNames = {}
 
 local function renderNames(list)
@@ -302,14 +302,26 @@ local function renderNames(list)
 		row.Text = "  • " .. name
 		row.Parent = rowFrame
 
-		-- Permanent green overlay
+		-- Blink-in animation then stay green
 		local glow = Instance.new("Frame")
-		glow.Size = UDim2.new(1, 0, 1, 0)
+		glow.Size = UDim2.new(0, 0, 1, 0)
 		glow.BackgroundColor3 = CFG.Pulse
 		glow.BorderSizePixel = 0
-		glow.BackgroundTransparency = 0.25
+		glow.BackgroundTransparency = 0.4
 		glow.ZIndex = rowFrame.ZIndex - 1
 		glow.Parent = rowFrame
+
+		-- Animate size expansion
+		TweenService:Create(glow, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.new(1, 0, 1, 0)
+		}):Play()
+
+		-- Then lock glow in at permanent brightness
+		task.delay(0.45, function()
+			TweenService:Create(glow, TweenInfo.new(0.35, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+				BackgroundTransparency = 0.25
+			}):Play()
+		end)
 	end
 
 	lastEyeNames = list
@@ -330,7 +342,7 @@ task.spawn(function()
 	end
 end)
 
---=== CAMERA FOLLOW ===
+--=== CAMERA FOLLOW LOOP ===
 RunService.RenderStepped:Connect(function()
 	if not watching then return end
 	local node = nodeFor(watching)
