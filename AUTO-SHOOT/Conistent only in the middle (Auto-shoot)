@@ -1,145 +1,533 @@
---// ===========================================================
---//   PAYLOAD0 • RIM ARC LINES ONLY (NO DOTS)
---//   • Smooth, high-resolution curvature (extra dense lines)
---// ===========================================================
+-- // ================================================================
+-- //  AUTO SHOOT (Ultra-Fast Response + Apex Assist + Sticky Memory)
+-- //  - Shoots within ~1 frame when perfect is met or just passed
+-- //  - Early jump: tiny pre-apex delay (biased), Late jump: instant
+-- //  - One auto per jump (no global cooldown); toggleable
+-- // ================================================================
 
 local Players = game:GetService('Players')
+local UserInputService = game:GetService('UserInputService')
 local RunService = game:GetService('RunService')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local CoreGui = game:GetService('CoreGui')
+local TweenService = game:GetService('TweenService')
 local Workspace = game:GetService('Workspace')
+local Camera = Workspace.CurrentCamera
 
 local plr = Players.LocalPlayer
 local char = plr.Character or plr.CharacterAdded:Wait()
-local hrp = char:WaitForChild('HumanoidRootPart')
+local remotes = ReplicatedStorage:WaitForChild('Remotes')
+local shootRemote = remotes:WaitForChild('Shoot')
+
+-- === STATE ===
+getgenv().PAYLOAD0_SYSTEM_ACTIVE = true
+local VisualsEnabled = true
+local shootKey: string? = nil
+local selectedRim: BasePart? = nil
+local activeNotifyGui
 
 -- === CONFIGURATION ===
-local PERFECT_DISTANCES = { 54.97, 61.53, 68.10 }
-local RING_ARC_DEGREES = 180
-local DEGREE_STEP = 2 -- smaller = smoother curve (was 6)
-local DOT_MATERIAL = Enum.Material.Neon
-local DOT_COLOR = Color3.fromRGB(0, 0, 0) -- black
-local LINK_THICKNESS = 0.25
-local ACTIVE_RANGE = 100
-local RIM_SIZE =
-    Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
-local HEIGHT_OFFSET = -18.259
+local PERFECT_DISTANCES = { 55.65, 62.21, 68.77 }
+local CLAMP_RADIUS = 1
+local ACTIVE_RANGE_MAIN = 90
+local COLOR_GREEN = Color3.fromRGB(0, 255, 100)
+local COLOR_GREEN_SOFT = Color3.fromRGB(0, 200, 80)
 
--- Per-line dot adjustments (positive = extend, negative = subtract)
-local ARC_ADJUSTMENTS = {
-    [1] = 12,
-    [2] = -9,
-    [3] = -27,
-}
+-- === TIMING TUNING (ultra-fast bias) ===
+local PERFECT_TOL = 0.10 -- perfect window (distance)
+local APEX_SOFT_TOL = 0.015 -- extra tolerance at fire time
+local STICKY_WINDOW = 0.04 -- remembers perfect for this many seconds
+local MIN_JUMP_VELOCITY = 2.5 -- airborne detection
+local NEAR_APEX_VEL = 4.0 -- treat as apex if |Y| <= this (sooner)
+local APEX_DELAY_CAP = 0.04 -- max wait for pre-apex release
+local APEX_BIAS = 0.35 -- fraction of (yVel/g) to wait (pre-apex)
+local SINGLE_SHOT_PER_JUMP = true -- prevent double-fire in same airtime
 
--- === INTERNAL STATE ===
-local RimLines = {}
-local RimModels = {}
-
--- === Create smooth arc lines ===
-local function createArcLines(rimPart, radius, extraDegrees)
-    local model = Instance.new('Model')
-    model.Name = 'Payload0_ArcLine'
-    model.Parent = Workspace
-
-    local base = Instance.new('Part')
-    base.Anchored = true
-    base.CanCollide = false
-    base.Transparency = 1
-    base.Size = Vector3.one
-    base.Position = rimPart.Position
-    base.Parent = model
-
-    local forward = rimPart.CFrame.LookVector
-    local right = rimPart.CFrame.RightVector
-    local points = {}
-
-    local startDeg = -RING_ARC_DEGREES / 2 - extraDegrees
-    local endDeg = RING_ARC_DEGREES / 2 + extraDegrees
-
-    for deg = startDeg, endDeg, DEGREE_STEP do
-        local rad = math.rad(deg)
-        local offset = (forward * math.cos(rad) + right * math.sin(rad))
-            * radius
-        table.insert(
-            points,
-            rimPart.Position + Vector3.new(offset.X, HEIGHT_OFFSET, offset.Z)
-        )
+-- === HELPER: BALL CHECK ===
+local function hasBall()
+    local c = plr.Character
+    if not c then
+        return false
     end
-
-    for i = 1, #points - 1 do
-        local a, b = points[i], points[i + 1]
-        local dist = (a - b).Magnitude
-        local link = Instance.new('Part')
-        link.Anchored = true
-        link.CanCollide = false
-        link.Material = DOT_MATERIAL
-        link.Color = DOT_COLOR
-        link.Transparency = 0
-        link.Size = Vector3.new(LINK_THICKNESS, LINK_THICKNESS, dist)
-        link.CFrame = CFrame.new(a, b) * CFrame.new(0, 0, -dist / 2)
-        link.Parent = model
+    for _, tool in ipairs(c:GetChildren()) do
+        if tool:IsA('Tool') and tool.Name:lower():find('ball') then
+            return true
+        end
     end
-
-    return model
+    return false
 end
 
--- === Rim registration ===
-local function registerRim(rim)
-    if RimLines[rim] then
+-- === NOTIFY ===
+local function notify(msg, color)
+    if activeNotifyGui and activeNotifyGui.Parent then
+        activeNotifyGui:Destroy()
+    end
+    local gui = Instance.new('ScreenGui', CoreGui)
+    gui.ResetOnSpawn = false
+    activeNotifyGui = gui
+
+    local label = Instance.new('TextLabel', gui)
+    label.AnchorPoint = Vector2.new(0.5, 0.5)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    label.Font = Enum.Font.Code
+    label.TextSize = 26
+    label.Text = msg
+    label.Position = UDim2.new(0.5, 0, 0.9, 0)
+
+    task.delay(1.0, function()
+        if gui == activeNotifyGui then
+            gui:Destroy()
+            activeNotifyGui = nil
+        end
+    end)
+end
+
+-- === CALIBRATION UI (click once to capture key) ===
+local calibrateGui
+local function showCalibrateUI()
+    if calibrateGui or shootKey or not hasBall() then
         return
     end
-    RimLines[rim] = true
+    calibrateGui = Instance.new('ScreenGui', CoreGui)
+    calibrateGui.Name = 'CalibrateReminder'
+    calibrateGui.ResetOnSpawn = false
+    calibrateGui.IgnoreGuiInset = true
 
-    local rimModel = Instance.new('Model')
-    rimModel.Name = 'Payload0_RimArcs_' .. rim:GetDebugId()
-    rimModel.Parent = Workspace
+    local frame = Instance.new('Frame')
+    frame.AnchorPoint = Vector2.new(0.5, 0.5)
+    frame.Position = UDim2.new(0.5, 0, 0.85, 0)
+    frame.Size = UDim2.new(0, 420, 0, 45)
+    frame.BackgroundTransparency = 0.3
+    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    frame.BorderSizePixel = 0
+    frame.Parent = calibrateGui
 
-    for i, dist in ipairs(PERFECT_DISTANCES) do
-        local extra = ARC_ADJUSTMENTS[i] or 0
-        local model = createArcLines(rim, dist, extra)
-        model.Parent = rimModel
-    end
+    local stroke = Instance.new('UIStroke')
+    stroke.Color = Color3.fromRGB(80, 255, 120)
+    stroke.Thickness = 1.6
+    stroke.Parent = frame
 
-    RimModels[rim] = rimModel
+    local corner = Instance.new('UICorner')
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = frame
+
+    local label = Instance.new('TextLabel')
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 22
+    label.TextColor3 = Color3.fromRGB(120, 255, 150)
+    label.Text = '🏀 Click once to calibrate your shot.'
+    label.Parent = frame
+
+    task.spawn(function()
+        while calibrateGui and not shootKey and hasBall() do
+            TweenService:Create(
+                label,
+                TweenInfo.new(0.6, Enum.EasingStyle.Sine),
+                { TextTransparency = 0.25 }
+            ):Play()
+            task.wait(0.6)
+            TweenService:Create(
+                label,
+                TweenInfo.new(0.6, Enum.EasingStyle.Sine),
+                { TextTransparency = 0 }
+            ):Play()
+            task.wait(0.6)
+        end
+    end)
 end
 
-local function unregisterRim(rim)
-    if RimModels[rim] then
-        RimModels[rim]:Destroy()
+local function removeCalibrateUI()
+    if calibrateGui then
+        calibrateGui:Destroy()
+        calibrateGui = nil
     end
-    RimLines[rim] = nil
-    RimModels[rim] = nil
 end
 
--- === Rim auto-detect ===
-Workspace.DescendantAdded:Connect(function(o)
-    if o:IsA('BasePart') and o.Name == 'Rim' and o.Size == RIM_SIZE then
-        registerRim(o)
+task.spawn(function()
+    while task.wait(0.4) do
+        if not hasBall() or shootKey then
+            removeCalibrateUI()
+        else
+            showCalibrateUI()
+        end
     end
 end)
-Workspace.DescendantRemoving:Connect(function(o)
-    if RimLines[o] then
-        unregisterRim(o)
+
+-- === RIM TRACKING ===
+local RimSize =
+    Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
+local Rims = {}
+Workspace.DescendantAdded:Connect(function(o)
+    if o:IsA('BasePart') and o.Name == 'Rim' and o.Size == RimSize then
+        table.insert(Rims, o)
     end
 end)
 for _, v in ipairs(Workspace:GetDescendants()) do
-    if v:IsA('BasePart') and v.Name == 'Rim' and v.Size == RIM_SIZE then
-        registerRim(v)
+    if v:IsA('BasePart') and v.Name == 'Rim' and v.Size == RimSize then
+        table.insert(Rims, v)
+    end
+end
+Workspace.DescendantRemoving:Connect(function(o)
+    for i, rim in ipairs(Rims) do
+        if rim == o then
+            table.remove(Rims, i)
+            break
+        end
+    end
+    if selectedRim == o then
+        selectedRim = nil
+    end
+end)
+
+-- === AUTO RIM LOCK (closest + on-screen) ===
+task.spawn(function()
+    while task.wait(0.085) do
+        if not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+            continue
+        end
+        local root = plr.Character
+            and plr.Character:FindFirstChild('HumanoidRootPart')
+        if not root then
+            continue
+        end
+        local bestRim, bestDist = nil, 85
+        for _, rim in ipairs(Rims) do
+            if rim:IsDescendantOf(Workspace) then
+                local dist = (rim.Position - root.Position).Magnitude
+                if dist < bestDist then
+                    local _, on = Camera:WorldToViewportPoint(rim.Position)
+                    if on then
+                        bestRim, bestDist = rim, dist
+                    end
+                end
+            end
+        end
+        if bestRim and bestRim ~= selectedRim then
+            selectedRim = bestRim
+        end
+    end
+end)
+
+-- === TOGGLES ===
+UserInputService.InputBegan:Connect(function(i, gp)
+    if gp then
+        return
+    end
+    if i.KeyCode == Enum.KeyCode.O then
+        VisualsEnabled = not VisualsEnabled
+        notify(
+            VisualsEnabled and '👁 Visuals ON' or '🙈 Visuals OFF',
+            VisualsEnabled and COLOR_GREEN or Color3.fromRGB(255, 80, 80)
+        )
+    elseif i.KeyCode == Enum.KeyCode.V then
+        getgenv().PAYLOAD0_SYSTEM_ACTIVE = not getgenv().PAYLOAD0_SYSTEM_ACTIVE
+        notify(
+            getgenv().PAYLOAD0_SYSTEM_ACTIVE and '✅ System ON'
+                or '🚫 System OFF',
+            getgenv().PAYLOAD0_SYSTEM_ACTIVE and COLOR_GREEN
+                or Color3.fromRGB(255, 80, 80)
+        )
+    end
+end)
+
+-- === SHOOT KEY CAPTURE (click once) ===
+local old
+old = hookmetamethod(game, '__namecall', function(self, ...)
+    local m = getnamecallmethod()
+    if m == 'FireServer' and self == shootRemote then
+        local args = { ... }
+        if type(args[3]) == 'string' and not shootKey then
+            shootKey = args[3]
+            removeCalibrateUI()
+            notify('Shoot key captured!', COLOR_GREEN)
+        end
+    end
+    return old(self, ...)
+end)
+
+-- === SMART AIM ===
+local lastTick, moveOffset = 0, Vector3.zero
+local function computeOffset()
+    if tick() - lastTick > 0.09 then
+        local hum = plr.Character
+            and plr.Character:FindFirstChildOfClass('Humanoid')
+        local moveDir = (hum and hum.MoveDirection) or Vector3.zero
+        moveOffset = Vector3.new(moveDir.X * 1.5, 0, moveDir.Z * 1.5)
+        lastTick = tick()
+    end
+    return moveOffset
+end
+
+local function computeArc(dist)
+    return Vector3.new(0, 43 + (dist / 15), 0)
+end
+
+local function smartAim(rim)
+    local offset = computeOffset()
+    local root = plr.Character
+        and plr.Character:FindFirstChild('HumanoidRootPart')
+    if not root then
+        return rim.Position
+    end
+    local dist = (root.Position - rim.Position).Magnitude
+    return rim.Position + computeArc(dist) - offset
+end
+
+local function shootAtTarget()
+    if not getgenv().PAYLOAD0_SYSTEM_ACTIVE or not shootKey then
+        return
+    end
+    if not (selectedRim and selectedRim:IsDescendantOf(Workspace)) then
+        return
+    end
+    local c = plr.Character
+    if not c then
+        return
+    end
+    local head, root = c:FindFirstChild('Head'), c.PrimaryPart
+    if not (head and root) then
+        return
+    end
+    local aimPos = smartAim(selectedRim)
+    local dir = (aimPos - head.Position).Unit
+    local shootFrom = root.Position + dir * 4
+    shootRemote:FireServer(aimPos, shootFrom, shootKey)
+end
+
+-- Manual click shoot preserved
+UserInputService.InputBegan:Connect(function(i, gp)
+    if gp or not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+        return
+    end
+    if i.UserInputType == Enum.UserInputType.MouseButton1 and hasBall() then
+        shootAtTarget()
+    end
+end)
+
+-- === HIGHLIGHT VISUAL ===
+local hl = CoreGui:FindFirstChild('PerfectRangeGlow')
+    or Instance.new('Highlight')
+hl.Name = 'PerfectRangeGlow'
+hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+hl.FillTransparency = 0.25
+hl.OutlineTransparency = 0
+hl.Adornee = plr.Character
+hl.Parent = CoreGui
+hl.Enabled = false
+
+-- === PERFECT RANGE SOURCES (Lol under Rim) ===
+local rimsForPush = {}
+for _, v in ipairs(Workspace:GetDescendants()) do
+    if
+        v:IsA('BasePart')
+        and v.Name == 'Lol'
+        and v.Parent
+        and v.Parent.Name == 'Rim'
+    then
+        table.insert(rimsForPush, v)
     end
 end
 
--- === Range visibility logic ===
-RunService.RenderStepped:Connect(function()
-    for rim, model in pairs(RimModels) do
+local function nearestRim(rootPos)
+    local nearest, nearestDist
+    for _, rim in ipairs(rimsForPush) do
         if rim:IsDescendantOf(Workspace) then
-            local dist = (rim.Position - hrp.Position).Magnitude
-            local active = dist <= ACTIVE_RANGE
-            for _, part in ipairs(model:GetDescendants()) do
-                if part:IsA('Part') then
-                    part.Transparency = active and 0 or 1
-                end
+            local rimXZ = Vector3.new(rim.Position.X, 0, rim.Position.Z)
+            local dist = (rimXZ - Vector3.new(rootPos.X, 0, rootPos.Z)).Magnitude
+            if not nearestDist or dist < nearestDist then
+                nearest, nearestDist = rim, dist
+            end
+        end
+    end
+    return nearest, nearestDist
+end
+
+local function getNearestPerfectDistance(current)
+    local nearest, smallestDiff
+    for _, pd in ipairs(PERFECT_DISTANCES) do
+        local diff = math.abs(pd - current)
+        if not smallestDiff or diff < smallestDiff then
+            nearest, smallestDiff = pd, diff
+        end
+    end
+    return nearest
+end
+
+-- === JUMP/APEX STATE ===
+local apexScheduledToken = 0
+local perJumpShotDone = false
+local lastPerfectTick = 0
+
+local function isAirborne(hum)
+    if not hum then
+        return false
+    end
+    local st = hum:GetState()
+    return not (
+        st == Enum.HumanoidStateType.Running
+        or st == Enum.HumanoidStateType.RunningNoPhysics
+        or st == Enum.HumanoidStateType.Landed
+        or st == Enum.HumanoidStateType.Seated
+    )
+end
+
+local function resetJump()
+    apexScheduledToken += 1 -- cancels pending delays
+    perJumpShotDone = false
+end
+
+plr.CharacterAdded:Connect(function(c2)
+    task.wait(0.5)
+    hl.Adornee = c2
+    resetJump()
+end)
+
+-- micro-ground watcher to reset immediately on land
+task.spawn(function()
+    while task.wait(0.04) do
+        local hum = plr.Character
+            and plr.Character:FindFirstChildOfClass('Humanoid')
+        if hum and not isAirborne(hum) then
+            if perJumpShotDone then
+                -- next jump can shoot again
+                perJumpShotDone = false
             end
         end
     end
 end)
 
-print('[PAYLOAD0] Rim arcs active — smoother black neon lines.')
+-- === CORE LOOP (RenderStepped) ===
+RunService.RenderStepped:Connect(function()
+    if not getgenv().PAYLOAD0_SYSTEM_ACTIVE then
+        hl.Enabled = false
+        return
+    end
+    local c = plr.Character
+    local hum = c and c:FindFirstChildOfClass('Humanoid')
+    local root = c and c:FindFirstChild('HumanoidRootPart')
+    if not (hum and root) or not hasBall() then
+        hl.Enabled = false
+        return
+    end
+
+    local rim, dist = nearestRim(root.Position)
+    if not rim or dist > ACTIVE_RANGE_MAIN then
+        hl.Enabled = false
+        return
+    end
+    local target = getNearestPerfectDistance(dist)
+    local diff = dist - target
+    local absDiff = math.abs(diff)
+
+    -- visuals
+    if VisualsEnabled then
+        if absDiff <= PERFECT_TOL then
+            hl.Enabled = true
+            hl.FillColor, hl.OutlineColor = COLOR_GREEN, COLOR_GREEN
+        elseif absDiff < CLAMP_RADIUS then
+            hl.Enabled = true
+            hl.FillColor, hl.OutlineColor = COLOR_GREEN_SOFT, COLOR_GREEN_SOFT
+        else
+            hl.Enabled = false
+        end
+    else
+        hl.Enabled = false
+    end
+
+    -- sticky perfect memory
+    if absDiff <= PERFECT_TOL then
+        lastPerfectTick = tick()
+    end
+    local recentlyPerfect = (tick() - lastPerfectTick) <= STICKY_WINDOW
+
+    -- airborne & vertical velocity
+    local yVel = (root.AssemblyLinearVelocity or root.Velocity).Y
+    local airborne = yVel > MIN_JUMP_VELOCITY or isAirborne(hum)
+
+    -- quick recheck at fire-time
+    local function stillValid(token)
+        if token and token ~= apexScheduledToken then
+            return false
+        end
+        if not getgenv().PAYLOAD0_SYSTEM_ACTIVE or not hasBall() then
+            return false
+        end
+        if not rim:IsDescendantOf(Workspace) then
+            return false
+        end
+        local _, dNow = nearestRim(root.Position)
+        if not dNow then
+            return false
+        end
+        local tNow = getNearestPerfectDistance(dNow)
+        local ok = math.abs(dNow - tNow) <= (PERFECT_TOL + APEX_SOFT_TOL)
+            or (tick() - lastPerfectTick) <= STICKY_WINDOW
+        return ok
+            and (
+                isAirborne(hum)
+                or ((root.AssemblyLinearVelocity or root.Velocity).Y > 0.5)
+            )
+    end
+
+    local function tryShootNow()
+        if SINGLE_SHOT_PER_JUMP and perJumpShotDone then
+            return
+        end
+        shootAtTarget()
+        perJumpShotDone = true
+    end
+
+    if airborne and (absDiff <= PERFECT_TOL or recentlyPerfect) then
+        -- If falling or near-apex -> fire immediately (no delay)
+        if yVel <= NEAR_APEX_VEL then
+            if stillValid() then
+                tryShootNow()
+            end
+            return
+        end
+
+        -- Rising & early: ultra-short biased wait toward apex (pre-apex feel)
+        local g = Workspace.Gravity
+        local t_to_apex = math.clamp((yVel / g) * APEX_BIAS, 0, APEX_DELAY_CAP)
+
+        if t_to_apex <= 0.005 then
+            -- basically next frame is fine
+            RunService.Heartbeat:Wait() -- micro-smooth
+            if stillValid() then
+                tryShootNow()
+            end
+        else
+            local token = apexScheduledToken
+            task.delay(t_to_apex, function()
+                if stillValid(token) then
+                    tryShootNow()
+                end
+            end)
+        end
+    end
+end)
+
+-- === Ensure per-jump reset on explicit land ===
+task.spawn(function()
+    local lastState
+    while task.wait(0.02) do
+        local hum = plr.Character
+            and plr.Character:FindFirstChildOfClass('Humanoid')
+        if hum then
+            local st = hum:GetState()
+            if st ~= lastState then
+                if
+                    st == Enum.HumanoidStateType.Landed
+                    or st == Enum.HumanoidStateType.Running
+                    or st == Enum.HumanoidStateType.Seated
+                then
+                    resetJump()
+                end
+                lastState = st
+            end
+        end
+    end
+end)
