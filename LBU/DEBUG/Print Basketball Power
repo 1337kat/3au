@@ -1,0 +1,14 @@
+local Players = game:GetService("Players")
+local plr = Players.LocalPlayer
+
+local char = plr.Character or plr.CharacterAdded:Wait()
+local ev = char:WaitForChild("E_V")
+local power = ev:WaitForChild("Power")
+
+-- print initial value
+print(power.Value)
+
+-- print every time it changes (live)
+power:GetPropertyChangedSignal("Value"):Connect(function()
+    print(power.Value)
+end)
