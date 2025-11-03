@@ -1,3 +1,12 @@
+--// ======================================================================
+--//   PAYLOAD0 • AUTO-AIM + SELF-HEALING SMART SHOOTER [LOCAL PLAYER ONLY]
+--//   • Auto-locks nearest visible rim
+--//   • Smart aim logic with real-time power tracking
+--//   • Only searches remotes under the local player’s folder
+--//   • Optional fallback: ReplicatedStorage.Remotes
+--// ======================================================================
+
+-- === SERVICES ===
 local Players            = game:GetService("Players")
 local UserInputService   = game:GetService("UserInputService")
 local RunService         = game:GetService("RunService")
@@ -12,7 +21,7 @@ local char  = plr.Character or plr.CharacterAdded:Wait()
 
 -- === STATE ===
 getgenv().PAYLOAD0_SYSTEM_ACTIVE = true
-local VisualsEnabled = true           -- set false for stealth (only notifications)
+local VisualsEnabled = true
 local selectedRim : BasePart? = nil
 local shootKey : string? = nil
 local activeNotifyGui
@@ -106,7 +115,7 @@ local function hasBall(): boolean
 	return false
 end
 
--- === CALIBRATE UI (only shows if you have a ball and no shootKey yet) ===
+-- === CALIBRATION UI ===
 local calibrateGui
 local function showCalibrateUI()
 	if calibrateGui or shootKey or not hasBall() then return end
@@ -160,23 +169,29 @@ task.spawn(function()
 	end
 end)
 
--- === SELF-HEALING REMOTE HOOK ===
+-- === SELF-HEALING REMOTE HOOK (STRICT LOCAL PLAYER BASED) ===
 local shootRemote : RemoteEvent? = nil
 local hookedMeta = nil
 local SEARCH_PATTERN = "shoot"
 
 local function getRoots()
 	local roots = {}
+
 	local userFolder = Workspace:FindFirstChild(plr.Name)
-	if userFolder and userFolder:FindFirstChild("Basketball") then
-		table.insert(roots, userFolder.Basketball)
+	if userFolder then
+		local basket = userFolder:FindFirstChild("Basketball")
+		if basket then
+			table.insert(roots, basket)
+		else
+			table.insert(roots, userFolder)
+		end
 	end
-	local iso = Workspace:FindFirstChild("isokcocs")
-	if iso and iso:FindFirstChild("Basketball") then
-		table.insert(roots, iso.Basketball)
-	end
+
 	local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
-	if remotesFolder then table.insert(roots, remotesFolder) end
+	if remotesFolder then
+		table.insert(roots, remotesFolder)
+	end
+
 	return roots
 end
 
@@ -186,10 +201,6 @@ local function findShootRemote(): RemoteEvent?
 			if obj:IsA("RemoteEvent") and obj.Name:lower():find(SEARCH_PATTERN) then
 				return obj
 			end
-		end
-		local direct = root:FindFirstChild("Shoot")
-		if direct and direct:IsA("RemoteEvent") then
-			return direct
 		end
 	end
 	return nil
@@ -236,7 +247,7 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
--- === RIM DISCOVERY + AUTO-LOCK (visible only) ===
+-- === RIM DETECTION + AUTOLOCK ===
 local RimSize = Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
 local Rims: {BasePart} = {}
 
@@ -271,7 +282,7 @@ local function nearestVisibleRim(root: Vector3): (BasePart?, number?)
 	return best, bestDist
 end
 
--- === SMART AIM (dynamic) ===
+-- === SMART AIM ===
 local lastTick, moveOffset = 0, Vector3.zero
 local function computeOffset()
 	if tick() - lastTick > 0.1 then
@@ -295,7 +306,7 @@ local function smartAim(rim: BasePart): Vector3
 	return rim.Position + computeArc(dist) - offset
 end
 
--- === OPTIONAL VISUAL RANGE HINT ===
+-- === RANGE HIGHLIGHT ===
 local hl = CoreGui:FindFirstChild("PAYLOAD0_RangeGlow") or Instance.new("Highlight")
 hl.Name = "PAYLOAD0_RangeGlow"
 hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
@@ -323,7 +334,6 @@ RunService.RenderStepped:Connect(function()
 	if not rim then hl.Enabled=false selectedRim=nil return end
 	selectedRim = rim
 
-	-- Simple “in-range” glow cue
 	if dist and dist <= ACTIVE_RANGE_MAIN then
 		hl.Enabled = true
 		hl.FillColor, hl.OutlineColor = Color3.fromRGB(0, 210, 120), Color3.fromRGB(0, 210, 120)
@@ -332,7 +342,7 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 
--- === FIRE HELPERS ===
+-- === SHOOT LOGIC ===
 local function fireShootRemote(aimPos: Vector3, shootFrom: Vector3?)
 	if not shootRemote then return end
 	local char = plr.Character
@@ -349,7 +359,6 @@ local function fireShootRemote(aimPos: Vector3, shootFrom: Vector3?)
 
 	local tool = ballTool or (char and char:FindFirstChildOfClass("Tool"))
 
-	-- Send the “rich” call if this remote expects more args, else fallback
 	local ok, _ = pcall(function()
 		shootRemote:FireServer(
 			aimPos,
@@ -362,7 +371,6 @@ local function fireShootRemote(aimPos: Vector3, shootFrom: Vector3?)
 		)
 	end)
 	if not ok then
-		-- Minimal fallback
 		shootRemote:FireServer(aimPos, shootFrom or (root.Position + dir * 4), shootKey)
 	end
 end
@@ -386,10 +394,7 @@ local function shootAtTarget()
 	local root  = char.PrimaryPart
 	if not (head and root) then return end
 
-	-- Live recompute aim vector RIGHT NOW
 	local aimPos = smartAim(selectedRim)
-
-	-- Derive launch origin from current position + direction
 	local dir = (aimPos - head.Position).Unit
 	local shootFrom = root.Position + dir * 3.8
 	if (shootFrom.Y - root.Position.Y) < 4 then
@@ -400,7 +405,7 @@ local function shootAtTarget()
 	notify("🏀 Shot fired", COLOR_GOOD)
 end
 
--- === LEFT CLICK TO SHOOT ===
+-- === INPUT ===
 UserInputService.InputBegan:Connect(function(i, gp)
 	if gp or not getgenv().PAYLOAD0_SYSTEM_ACTIVE then return end
 	if i.UserInputType == Enum.UserInputType.MouseButton1 and hasBall() then
@@ -408,7 +413,6 @@ UserInputService.InputBegan:Connect(function(i, gp)
 	end
 end)
 
--- Optional: toggle visuals with V
 UserInputService.InputBegan:Connect(function(i, gp)
 	if gp then return end
 	if i.KeyCode == Enum.KeyCode.V then
