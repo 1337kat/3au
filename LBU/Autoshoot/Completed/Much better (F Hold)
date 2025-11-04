@@ -32,7 +32,7 @@ local ACTIVE_RANGE_MAIN = 90
 local SHOOT_POWER       = 75
 
 -- Perfect distance system
-local PERFECT_DISTANCES = { 59.68 }
+local PERFECT_DISTANCES = { 54.68 }
 local PERFECT_TOL       = 0.12
 local PREDICTIVE_BIAS   = 2.0
 local SINGLE_SHOT_PER_JUMP = true
