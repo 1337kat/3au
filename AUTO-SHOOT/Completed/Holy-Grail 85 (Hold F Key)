@@ -1,6 +1,6 @@
 --[[
-    F - Aimbot
-    Y - Select Rim
+Hold F to AutoShoot
+Y - Select Rim
 --]]
 
 local Players            = game:GetService('Players')
