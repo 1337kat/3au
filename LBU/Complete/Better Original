@@ -1,0 +1,301 @@
+local Players = game:GetService('Players')
+local UserInputService = game:GetService('UserInputService')
+local RunService = game:GetService('RunService')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local CoreGui = game:GetService('CoreGui')
+local TweenService = game:GetService('TweenService')
+local Workspace = game:GetService('Workspace')
+local Camera = workspace.CurrentCamera
+
+local plr = Players.LocalPlayer
+local char = plr.Character or plr.CharacterAdded:Wait()
+
+-- === STATE ===
+getgenv().PAYLOAD0_SYSTEM_ACTIVE = true
+local SystemOn = true
+local shootKey : string? = nil
+local selectedRim : BasePart? = nil
+local activeNotifyGui
+local ballTool : Tool? = nil
+
+-- === CONFIGURATION ===
+local ACTIVE_RANGE_MAIN = 90
+local SHOOT_POWER = 75
+
+-- === NOTIFY SYSTEM ===
+local function notify(msg)
+	if activeNotifyGui and activeNotifyGui.Parent then
+		activeNotifyGui:Destroy()
+	end
+	local gui = Instance.new('ScreenGui')
+	gui.ResetOnSpawn = false
+	gui.Parent = CoreGui
+	activeNotifyGui = gui
+
+	local label = Instance.new('TextLabel')
+	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.Font = Enum.Font.Code
+	label.TextSize = 26
+	label.Text = msg
+	label.Position = UDim2.new(0.5, 0, 0.9, 0)
+	label.Parent = gui
+
+	task.spawn(function()
+		task.wait(1.2)
+		if gui == activeNotifyGui then
+			gui:Destroy()
+			activeNotifyGui = nil
+		end
+	end)
+end
+
+-- === HELPER: BALL CHECK ===
+local function hasBall()
+	local c = plr.Character
+	if not c then return false end
+	for _, tool in ipairs(c:GetChildren()) do
+		if tool:IsA('Tool') and tool.Name:lower():find('ball') then
+			ballTool = tool
+			return true
+		end
+	end
+	ballTool = nil
+	return false
+end
+
+-- === CALIBRATE UI ===
+local calibrateGui
+local function showCalibrateUI()
+	if calibrateGui or shootKey or not hasBall() then return end
+	calibrateGui = Instance.new('ScreenGui')
+	calibrateGui.Name = 'CalibrateReminder'
+	calibrateGui.ResetOnSpawn = false
+	calibrateGui.IgnoreGuiInset = true
+	calibrateGui.Parent = CoreGui
+
+	local frame = Instance.new('Frame')
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.new(0.5, 0, 0.85, 0)
+	frame.Size = UDim2.new(0, 420, 0, 45)
+	frame.BackgroundTransparency = 0.3
+	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	frame.BorderSizePixel = 0
+	frame.Parent = calibrateGui
+
+	local corner = Instance.new('UICorner')
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = frame
+
+	local label = Instance.new('TextLabel')
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.Font = Enum.Font.GothamMedium
+	label.TextSize = 22
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.Text = '🏀 Click once to calibrate your shot.'
+	label.Parent = frame
+
+	task.spawn(function()
+		while calibrateGui and not shootKey and hasBall() do
+			local t1 = TweenService:Create(label, TweenInfo.new(0.8, Enum.EasingStyle.Sine), {TextTransparency = 0.3})
+			local t2 = TweenService:Create(label, TweenInfo.new(0.8, Enum.EasingStyle.Sine), {TextTransparency = 0})
+			t1:Play(); t1.Completed:Wait()
+			t2:Play(); t2.Completed:Wait()
+		end
+	end)
+end
+
+local function removeCalibrateUI()
+	if calibrateGui then calibrateGui:Destroy(); calibrateGui = nil end
+end
+
+task.spawn(function()
+	while task.wait(0.5) do
+		if not hasBall() or shootKey then removeCalibrateUI() else showCalibrateUI() end
+	end
+end)
+
+-- === REMOTE HOOKING ===
+local shootRemote : RemoteEvent? = nil
+local hookedMeta = nil
+local SEARCH_PATTERN = 'shoot'
+
+local function getRoots()
+	local roots = {}
+	local userFolder = Workspace:FindFirstChild(plr.Name)
+	if userFolder and userFolder:FindFirstChild('Basketball') then
+		table.insert(roots, userFolder.Basketball)
+	end
+	local remotes = ReplicatedStorage:FindFirstChild('Remotes')
+	if remotes then table.insert(roots, remotes) end
+	return roots
+end
+
+local function findShootRemote()
+	for _, root in ipairs(getRoots()) do
+		for _, obj in ipairs(root:GetDescendants()) do
+			if obj:IsA('RemoteEvent') and obj.Name:lower():find(SEARCH_PATTERN) then
+				return obj
+			end
+		end
+		local direct = root:FindFirstChild('Shoot')
+		if direct and direct:IsA('RemoteEvent') then
+			return direct
+		end
+	end
+	return nil
+end
+
+local function hookRemote(remote : RemoteEvent)
+	if hookedMeta then return end
+	local old
+	old = hookmetamethod(game, '__namecall', function(self, ...)
+		local m = getnamecallmethod()
+		if m == 'FireServer' and self == remote then
+			local args = {...}
+			if type(args[3]) == 'string' and not shootKey then
+				shootKey = args[3]
+				removeCalibrateUI()
+				pcall(function() notify('Shoot key captured: ' .. shootKey) end)
+			end
+		end
+		return old(self, ...)
+	end)
+	hookedMeta = old
+	shootRemote = remote
+end
+
+local function unhookRemote()
+	hookedMeta = nil
+	shootRemote = nil
+end
+
+RunService.Heartbeat:Connect(function()
+	if not SystemOn then return end
+	local current = findShootRemote()
+	if current then
+		if current ~= shootRemote then
+			unhookRemote()
+			hookRemote(current)
+		end
+	elseif shootRemote then
+		unhookRemote()
+	end
+end)
+
+-- === RIM DETECTION ===
+local RimSize = Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
+local Rims = {}
+for _, v in ipairs(Workspace:GetDescendants()) do
+	if v:IsA('BasePart') and v.Name == 'Rim' and v.Size == RimSize then
+		table.insert(Rims, v)
+	end
+end
+Workspace.DescendantAdded:Connect(function(o)
+	if o:IsA('BasePart') and o.Name == 'Rim' and o.Size == RimSize then
+		table.insert(Rims, o)
+	end
+end)
+Workspace.DescendantRemoving:Connect(function(o)
+	for i, rim in ipairs(Rims) do
+		if rim == o then table.remove(Rims, i); break end
+	end
+	if selectedRim == o then selectedRim = nil end
+end)
+
+task.spawn(function()
+	while task.wait(0.1) do
+		if not SystemOn then continue end
+		local root = plr.Character and plr.Character:FindFirstChild('HumanoidRootPart')
+		if not root then continue end
+		local bestRim, bestDist = nil, 85
+		for _, rim in ipairs(Rims) do
+			if rim:IsDescendantOf(Workspace) then
+				local dist = (rim.Position - root.Position).Magnitude
+				if dist < bestDist then
+					local _, on = Camera:WorldToViewportPoint(rim.Position)
+					if on then bestRim, bestDist = rim, dist end
+				end
+			end
+		end
+		if bestRim and bestRim ~= selectedRim then
+			selectedRim = bestRim
+		end
+	end
+end)
+
+-- === SHOOT LOGIC ===
+local lastTick, moveOffset = 0, Vector3.zero
+local function computeOffset()
+	if tick() - lastTick > 0.1 then
+		local hum = plr.Character and plr.Character:FindFirstChildOfClass('Humanoid')
+		local moveDir = (hum and hum.MoveDirection) or Vector3.zero
+		moveOffset = Vector3.new(moveDir.X * 1.5, 0, moveDir.Z * 1.5)
+		lastTick = tick()
+	end
+	return moveOffset
+end
+
+local function computeArc(dist) return Vector3.new(0, 43 + (dist / 15), 0) end
+
+local function smartAim(rim)
+	local offset = computeOffset()
+	local root = plr.Character and plr.Character:FindFirstChild('HumanoidRootPart')
+	if not root then return rim.Position end
+	local dist = (root.Position - rim.Position).Magnitude
+	return rim.Position + computeArc(dist) - offset
+end
+
+local function fireShootRemote(aimPos, shootFrom)
+	if not shootRemote then return end
+	local char = plr.Character
+	local root = char and char.PrimaryPart
+	local head = char and char:FindFirstChild('Head')
+	if not (char and root and head) then return end
+	local dir = (aimPos - head.Position).Unit
+	local tool = ballTool or (char and char:FindFirstChildOfClass('Tool'))
+	shootRemote:FireServer(
+		aimPos,
+		shootFrom or (root.Position + dir * 4),
+		shootKey,
+		tool,
+		SHOOT_POWER,
+		{ CFrame = root.CFrame, FieldOfView = Camera.FieldOfView, ViewportSize = Camera.ViewportSize },
+		true
+	)
+end
+
+local function shootAtTarget()
+	if not SystemOn then return end
+	if not (selectedRim and selectedRim:IsDescendantOf(Workspace)) then return end
+	if not shootKey or not shootRemote then return end
+
+	local char = plr.Character
+	if not char then return end
+	local head, root = char:FindFirstChild('Head'), char.PrimaryPart
+	if not (head and root) then return end
+
+	local aimPos = smartAim(selectedRim)
+	local dir = (aimPos - head.Position).Unit
+	local shootFrom = root.Position + dir * 4
+	fireShootRemote(aimPos, shootFrom)
+end
+
+-- === INPUT HANDLERS ===
+UserInputService.InputBegan:Connect(function(i, gp)
+	if gp then return end
+
+	-- V key toggle
+	if i.KeyCode == Enum.KeyCode.V then
+		SystemOn = not SystemOn
+		getgenv().PAYLOAD0_SYSTEM_ACTIVE = SystemOn
+		notify(SystemOn and '✅ System On' or '❌ System Off')
+	end
+
+	-- Shoot when system on
+	if SystemOn and i.UserInputType == Enum.UserInputType.MouseButton1 and hasBall() then
+		shootAtTarget()
+	end
+end)
