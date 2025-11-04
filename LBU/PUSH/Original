@@ -1,0 +1,116 @@
+-- === PUSH LOGIC ONLY ===
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local plr = Players.LocalPlayer
+local CLAMP_RADIUS = 1
+local SOFT_RADIUS = CLAMP_RADIUS * 2
+local ACTIVE_RANGE_MAIN = 90
+local MAX_PUSH = 0.06
+local DAMPING = 0.9
+
+-- Track movement keys (WASD)
+local moveKeys = { W = false, A = false, S = false, D = false }
+UserInputService.InputBegan:Connect(function(i, gp)
+	if gp then return end
+	local k = i.KeyCode.Name
+	if moveKeys[k] ~= nil then
+		moveKeys[k] = true
+	end
+end)
+UserInputService.InputEnded:Connect(function(i, gp)
+	if gp then return end
+	local k = i.KeyCode.Name
+	if moveKeys[k] ~= nil then
+		moveKeys[k] = false
+	end
+end)
+
+-- Return true only when pushing left/right (A or D only)
+local function shouldPush()
+	local c = 0
+	for _, v in pairs(moveKeys) do
+		if v then c += 1 end
+	end
+	return c == 1 and (moveKeys.A or moveKeys.D)
+end
+
+-- Find nearest rim (example logic — you can replace this)
+local RimSize = Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
+local Rims = {}
+for _, v in ipairs(Workspace:GetDescendants()) do
+	if v:IsA("BasePart") and v.Name == "Rim" and v.Size == RimSize then
+		table.insert(Rims, v)
+	end
+end
+local function nearestRim(rootPos)
+	local nearest, nearestDist
+	for _, rim in ipairs(Rims) do
+		if rim:IsDescendantOf(Workspace) then
+			local rimXZ = Vector3.new(rim.Position.X, 0, rim.Position.Z)
+			local dist = (rimXZ - Vector3.new(rootPos.X, 0, rootPos.Z)).Magnitude
+			if not nearestDist or dist < nearestDist then
+				nearest, nearestDist = rim, dist
+			end
+		end
+	end
+	return nearest, nearestDist
+end
+
+-- Perfect distance reference
+local PERFECT_DISTANCES = { 54.97, 61.53, 68.10 }
+local function getNearestPerfectDistance(current)
+	local nearest, smallestDiff
+	for _, pd in ipairs(PERFECT_DISTANCES) do
+		local diff = math.abs(pd - current)
+		if not smallestDiff or diff < smallestDiff then
+			nearest, smallestDiff = pd, diff
+		end
+	end
+	return nearest
+end
+
+-- Core push behavior
+local smoothBias = Vector3.zero
+RunService.RenderStepped:Connect(function()
+	local char = plr.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	local rim, dist = nearestRim(root.Position)
+	if not rim or dist > ACTIVE_RANGE_MAIN then
+		smoothBias = Vector3.zero
+		return
+	end
+
+	local target = getNearestPerfectDistance(dist)
+	local diff = dist - target
+	local absDiff = math.abs(diff)
+
+	local strength
+	if absDiff <= CLAMP_RADIUS then
+		strength = (CLAMP_RADIUS - absDiff) / CLAMP_RADIUS
+	elseif absDiff <= SOFT_RADIUS then
+		strength = (SOFT_RADIUS - absDiff) / SOFT_RADIUS * 0.35
+	else
+		strength = 0
+	end
+	strength = math.clamp(strength, 0, 1)
+
+	local desired = Vector3.zero
+	if shouldPush() and strength > 0 then
+		local toRim = Vector3.new(rim.Position.X, 0, rim.Position.Z)
+			- Vector3.new(root.Position.X, 0, root.Position.Z)
+		local distSign = math.sign(diff)
+		if distSign > 0 then
+			local pushDir = -toRim.Unit
+			desired = pushDir * math.min(strength * MAX_PUSH, MAX_PUSH)
+		end
+	end
+
+	-- Apply smooth damping for fluid movement
+	smoothBias = smoothBias * DAMPING + desired * (1 - DAMPING)
+	root.CFrame += Vector3.new(smoothBias.X, 0, smoothBias.Z)
+end)
