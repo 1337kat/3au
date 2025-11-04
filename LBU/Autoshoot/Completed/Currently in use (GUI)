@@ -1,0 +1,854 @@
+-- PerfectAutoShoot_With_Editor_Fixed.lua
+-- Full standalone: auto-shoot system + live Distance→Power editor GUI
+-- Fixes: add/update not appearing, numeric input sanitization, safe refresh, stable ordering
+-- No writefile; uses getgenv() so values persist while your executor session lives.
+
+-- ///////////////////////////////////////
+-- // SERVICES
+-- ///////////////////////////////////////
+local Players = game:GetService('Players')
+local UserInputService = game:GetService('UserInputService')
+local RunService = game:GetService('RunService')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local CoreGui = game:GetService('CoreGui')
+local TweenService = game:GetService('TweenService')
+local Workspace = game:GetService('Workspace')
+local Camera = workspace.CurrentCamera
+
+-- ///////////////////////////////////////
+-- // LOCALS
+-- ///////////////////////////////////////
+local plr = Players.LocalPlayer
+local char = plr.Character or plr.CharacterAdded:Wait()
+
+-- ///////////////////////////////////////
+-- // STATE
+-- ///////////////////////////////////////
+getgenv().PAYLOAD0_SYSTEM_ACTIVE = true
+local SystemOn = true
+local shootKey = nil
+local selectedRim = nil
+local activeNotifyGui = nil
+local ballTool = nil
+
+-- F-hold = active
+local fKeyDown = false
+local SystemActive = false
+
+-- ///////////////////////////////////////
+-- // CONFIG
+-- ///////////////////////////////////////
+local ACTIVE_RANGE_MAIN = 90
+local PERFECT_TOL = 0.12
+local PREDICTIVE_BIAS = 2.0
+local SINGLE_SHOT_PER_JUMP = true
+local AUTOJUMP_PREWINDOW = 4.0
+local AUTOJUMP_COOLDOWN = 0.20
+local MIN_JUMP_VELOCITY = 2.2
+local INCLUDE_TEMPLATE_ARGS = true
+
+-- Rim size signature (your map’s rims)
+local RimSize =
+    Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
+
+-- ///////////////////////////////////////
+-- // DISTANCE→POWER TABLES (backed by getgenv)
+-- ///////////////////////////////////////
+getgenv().DISTANCE_TO_POWER = getgenv().DISTANCE_TO_POWER or {}
+getgenv().PERFECT_DISTANCES = getgenv().PERFECT_DISTANCES or {}
+
+if next(getgenv().DISTANCE_TO_POWER) == nil then
+    getgenv().DISTANCE_TO_POWER[54.68] = 75
+    getgenv().DISTANCE_TO_POWER[40.54] = 20
+    getgenv().PERFECT_DISTANCES = { 54.68, 40.54 }
+end
+
+local DISTANCE_TO_POWER = getgenv().DISTANCE_TO_POWER
+local PERFECT_DISTANCES = getgenv().PERFECT_DISTANCES
+
+-- ///////////////////////////////////////
+-- // NOTIFY (subtle)
+-- ///////////////////////////////////////
+local function notify(msg)
+    if activeNotifyGui and activeNotifyGui.Parent then
+        activeNotifyGui:Destroy()
+    end
+    local gui = Instance.new('ScreenGui')
+    gui.ResetOnSpawn = false
+    gui.Parent = CoreGui
+    activeNotifyGui = gui
+
+    local label = Instance.new('TextLabel')
+    label.AnchorPoint = Vector2.new(0.5, 0.5)
+    label.Position = UDim2.new(0.5, 0, 0.90, 0)
+    label.Size = UDim2.new(0, 580, 0, 36)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.Code
+    label.TextSize = 24
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.Text = msg
+    label.Parent = gui
+
+    task.delay(1.1, function()
+        if gui == activeNotifyGui then
+            gui:Destroy()
+            activeNotifyGui = nil
+        end
+    end)
+end
+
+-- ///////////////////////////////////////
+-- // BALL CHECK
+-- ///////////////////////////////////////
+local function hasBall()
+    local c = plr.Character
+    if not c then
+        return false
+    end
+    for _, tool in ipairs(c:GetChildren()) do
+        if tool:IsA('Tool') and tool.Name:lower():find('ball') then
+            ballTool = tool
+            return true
+        end
+    end
+    ballTool = nil
+    return false
+end
+
+-- ///////////////////////////////////////
+-- // CALIBRATE UI (click once to capture key)
+-- ///////////////////////////////////////
+local calibrateGui
+local function showCalibrateUI()
+    if calibrateGui or shootKey or not hasBall() then
+        return
+    end
+    calibrateGui = Instance.new('ScreenGui')
+    calibrateGui.Name = 'CalibrateReminder'
+    calibrateGui.ResetOnSpawn = false
+    calibrateGui.IgnoreGuiInset = true
+    calibrateGui.Parent = CoreGui
+
+    local frame = Instance.new('Frame')
+    frame.AnchorPoint = Vector2.new(0.5, 0.5)
+    frame.Position = UDim2.new(0.5, 0, 0.85, 0)
+    frame.Size = UDim2.new(0, 420, 0, 45)
+    frame.BackgroundTransparency = 0.3
+    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    frame.BorderSizePixel = 0
+    frame.Parent = calibrateGui
+
+    Instance.new('UICorner', frame).CornerRadius = UDim.new(0, 10)
+
+    local label = Instance.new('TextLabel')
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 22
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.Text = 'Click once to calibrate your shot.'
+    label.Parent = frame
+
+    task.spawn(function()
+        while calibrateGui and not shootKey and hasBall() do
+            local t1 = TweenService:Create(
+                label,
+                TweenInfo.new(0.8, Enum.EasingStyle.Sine),
+                { TextTransparency = 0.35 }
+            )
+            local t2 = TweenService:Create(
+                label,
+                TweenInfo.new(0.8, Enum.EasingStyle.Sine),
+                { TextTransparency = 0 }
+            )
+            t1:Play()
+            t1.Completed:Wait()
+            t2:Play()
+            t2.Completed:Wait()
+        end
+    end)
+end
+
+local function removeCalibrateUI()
+    if calibrateGui then
+        calibrateGui:Destroy()
+        calibrateGui = nil
+    end
+end
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if not hasBall() or shootKey then
+            removeCalibrateUI()
+        else
+            showCalibrateUI()
+        end
+    end
+end)
+
+-- ///////////////////////////////////////
+-- // REMOTE HOOKING + TEMPLATE CAPTURE
+-- ///////////////////////////////////////
+local shootRemote = nil
+local hookedMeta = nil
+local lastArgTemplate = nil
+local SEARCH_PATTERN = 'shoot'
+
+local function getRoots()
+    local roots = {}
+    local userFolder = Workspace:FindFirstChild(plr.Name)
+    if userFolder and userFolder:FindFirstChild('Basketball') then
+        table.insert(roots, userFolder.Basketball)
+    end
+    local remotes = ReplicatedStorage:FindFirstChild('Remotes')
+    if remotes then
+        table.insert(roots, remotes)
+    end
+    return roots
+end
+
+local function findShootRemote()
+    for _, root in ipairs(getRoots()) do
+        for _, obj in ipairs(root:GetDescendants()) do
+            if
+                obj:IsA('RemoteEvent') and obj.Name:lower():find(SEARCH_PATTERN)
+            then
+                return obj
+            end
+        end
+        local direct = root:FindFirstChild('Shoot')
+        if direct and direct:IsA('RemoteEvent') then
+            return direct
+        end
+    end
+    return nil
+end
+
+local function hookRemote(remote)
+    if hookedMeta then
+        return
+    end
+    local old
+    old = hookmetamethod(game, '__namecall', function(self, ...)
+        local m = getnamecallmethod()
+        if m == 'FireServer' and self == remote then
+            local args = { ... }
+            -- capture shootKey on first legit shot
+            if type(args[3]) == 'string' and not shootKey then
+                shootKey = args[3]
+                removeCalibrateUI()
+                notify('Shoot key captured: ' .. shootKey)
+            end
+            -- capture full template
+            if INCLUDE_TEMPLATE_ARGS then
+                lastArgTemplate = args
+            end
+        end
+        return old(self, ...)
+    end)
+    hookedMeta = old
+    shootRemote = remote
+end
+
+local function unhookRemote()
+    hookedMeta = nil
+    shootRemote = nil
+end
+
+RunService.Heartbeat:Connect(function()
+    if not SystemOn then
+        return
+    end
+    local current = findShootRemote()
+    if current then
+        if current ~= shootRemote then
+            unhookRemote()
+            hookRemote(current)
+        end
+    elseif shootRemote then
+        unhookRemote()
+    end
+end)
+
+-- ///////////////////////////////////////
+-- // RIM DETECTION + SELECTION
+-- ///////////////////////////////////////
+local Rims = {}
+for _, v in ipairs(Workspace:GetDescendants()) do
+    if v:IsA('BasePart') and v.Name == 'Rim' and v.Size == RimSize then
+        table.insert(Rims, v)
+    end
+end
+Workspace.DescendantAdded:Connect(function(o)
+    if o:IsA('BasePart') and o.Name == 'Rim' and o.Size == RimSize then
+        table.insert(Rims, o)
+    end
+end)
+Workspace.DescendantRemoving:Connect(function(o)
+    for i, rim in ipairs(Rims) do
+        if rim == o then
+            table.remove(Rims, i)
+            break
+        end
+    end
+    if selectedRim == o then
+        selectedRim = nil
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.10) do
+        if not SystemOn then
+            continue
+        end
+        local root = plr.Character
+            and plr.Character:FindFirstChild('HumanoidRootPart')
+        if not root then
+            continue
+        end
+        local bestRim, bestDist = nil, 85
+        for _, rim in ipairs(Rims) do
+            if rim:IsDescendantOf(Workspace) then
+                local dist = (rim.Position - root.Position).Magnitude
+                if dist < bestDist then
+                    local _, on = Camera:WorldToViewportPoint(rim.Position)
+                    if on then
+                        bestRim, bestDist = rim, dist
+                    end
+                end
+            end
+        end
+        selectedRim = bestRim
+    end
+end)
+
+-- ///////////////////////////////////////
+-- // HELPERS
+-- ///////////////////////////////////////
+local lastTick, moveOffset = 0, Vector3.zero
+local function computeOffset()
+    if tick() - lastTick > 0.1 then
+        local hum = plr.Character
+            and plr.Character:FindFirstChildOfClass('Humanoid')
+        local moveDir = (hum and hum.MoveDirection) or Vector3.zero
+        moveOffset = Vector3.new(moveDir.X * 1.5, 0, moveDir.Z * 1.5)
+        lastTick = tick()
+    end
+    return moveOffset
+end
+
+local function computeArc(dist)
+    return Vector3.new(0, 43 + (dist / 15), 0)
+end
+
+local function smartAim(rim)
+    local offset = computeOffset()
+    local root = plr.Character
+        and plr.Character:FindFirstChild('HumanoidRootPart')
+    if not root then
+        return rim.Position
+    end
+    local dist = (root.Position - rim.Position).Magnitude
+    return rim.Position + computeArc(dist) - offset
+end
+
+local function planarDistance(a, b)
+    local dx, dz = a.X - b.X, a.Z - b.Z
+    return math.sqrt(dx * dx + dz * dz)
+end
+
+local function getNearestPerfectDistance(current)
+    local nearest
+    for _, pd in ipairs(PERFECT_DISTANCES) do
+        local diff = math.abs(pd - current)
+        if not nearest or diff < math.abs(nearest - current) then
+            nearest = pd
+        end
+    end
+    return nearest or current
+end
+
+local function getPowerForDistance(dist)
+    local exact = DISTANCE_TO_POWER[dist]
+    if exact then
+        return exact
+    end
+    local bestDist, bestPower = nil, nil
+    for d, p in pairs(DISTANCE_TO_POWER) do
+        local diff = math.abs(d - dist)
+        if not bestDist or diff < math.abs(bestDist - dist) then
+            bestDist, bestPower = d, p
+        end
+    end
+    return bestPower or 75
+end
+
+-- ///////////////////////////////////////
+-- // FIRE REMOTE (template replay + power inject)
+-- ///////////////////////////////////////
+local function fireShootRemote(aimPos, shootFrom, targetDist)
+    if not (shootRemote and shootKey) then
+        return
+    end
+    local c = plr.Character
+    local head = c and c:FindFirstChild('Head')
+    local root = c and c.PrimaryPart
+    if not (c and head and root) then
+        return
+    end
+
+    if INCLUDE_TEMPLATE_ARGS and lastArgTemplate then
+        local args = table.clone(lastArgTemplate)
+
+        -- replace first two Vector3s with aim/shootFrom if present
+        local v3Idx = {}
+        for i, v in ipairs(args) do
+            if typeof(v) == 'Vector3' then
+                table.insert(v3Idx, i)
+            end
+        end
+        if #v3Idx >= 2 then
+            args[v3Idx[1]] = aimPos
+            args[v3Idx[2]] = shootFrom
+        end
+
+        -- ensure shootKey slot uses our captured key (short string heuristic)
+        for i, v in ipairs(args) do
+            if type(v) == 'string' and v ~= shootKey and #v <= 6 then
+                args[i] = shootKey
+                break
+            end
+        end
+
+        -- inject power in the trailing numeric fields
+        for i = #args, math.max(1, #args - 3), -1 do
+            if type(args[i]) == 'number' then
+                args[i] = getPowerForDistance(targetDist)
+                break
+            end
+        end
+
+        shootRemote:FireServer(table.unpack(args))
+        return
+    end
+
+    -- Fallback packing (if template not available)
+    local tool = ballTool or (c and c:FindFirstChildOfClass('Tool'))
+    shootRemote:FireServer(
+        aimPos,
+        shootFrom,
+        shootKey,
+        tool,
+        getPowerForDistance(targetDist),
+        {
+            CFrame = root.CFrame,
+            FieldOfView = Camera.FieldOfView,
+            ViewportSize = Camera.ViewportSize,
+        },
+        true
+    )
+end
+
+-- ///////////////////////////////////////
+-- // PER-JUMP STATE
+-- ///////////////////////////////////////
+local perJumpShotDone = false
+local lastJumpAssistAt = 0
+local wasOutside = true
+
+local function resetJumpFlags()
+    perJumpShotDone = false
+    wasOutside = true
+end
+
+plr.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    resetJumpFlags()
+end)
+
+local function isAirborne(hum)
+    if not hum then
+        return false
+    end
+    local st = hum:GetState()
+    return not (
+        st == Enum.HumanoidStateType.Running
+        or st == Enum.HumanoidStateType.RunningNoPhysics
+        or st == Enum.HumanoidStateType.Landed
+        or st == Enum.HumanoidStateType.Seated
+    )
+end
+
+-- ///////////////////////////////////////
+-- // INPUT
+-- ///////////////////////////////////////
+UserInputService.InputBegan:Connect(function(i, gp)
+    if gp then
+        return
+    end
+
+    -- Toggle system with V
+    if i.KeyCode == Enum.KeyCode.V then
+        SystemOn = not SystemOn
+        getgenv().PAYLOAD0_SYSTEM_ACTIVE = SystemOn
+        notify(SystemOn and 'System On' or 'System Off')
+    end
+
+    -- F hold = activate autoshoot
+    if i.KeyCode == Enum.KeyCode.F then
+        if fKeyDown then
+            return
+        end
+        fKeyDown = true
+        SystemActive = true
+        notify('AUTO-SHOOT ON (Hold F)')
+    end
+
+    -- Click once to calibrate (only message; legit click triggers hook capture)
+    if
+        SystemOn
+        and i.UserInputType == Enum.UserInputType.MouseButton1
+        and hasBall()
+        and not shootKey
+    then
+        notify('Calibrating... click to shoot once.')
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(i, gp)
+    if gp then
+        return
+    end
+    if i.KeyCode == Enum.KeyCode.F and fKeyDown then
+        fKeyDown = false
+        SystemActive = false
+        notify('AUTO-SHOOT OFF')
+    end
+end)
+
+-- ///////////////////////////////////////
+-- // MAIN LOOP (active only while F held)
+-- ///////////////////////////////////////
+RunService.RenderStepped:Connect(function(dt)
+    if
+        not (
+            SystemActive
+            and SystemOn
+            and hasBall()
+            and shootKey
+            and selectedRim
+        )
+    then
+        return
+    end
+
+    local c = plr.Character
+    local hum = c and c:FindFirstChildOfClass('Humanoid')
+    local root = c
+        and (
+            c:FindFirstChild('HumanoidRootPart')
+            or c:FindFirstChildWhichIsA('BasePart')
+        )
+    local head = c and c:FindFirstChild('Head')
+    if not (hum and root and head) then
+        return
+    end
+
+    local rim = selectedRim
+    if not (rim and rim:IsDescendantOf(Workspace)) then
+        return
+    end
+
+    local refPos = rim.Position
+    local dist = planarDistance(root.Position, refPos)
+    if dist > ACTIVE_RANGE_MAIN then
+        return
+    end
+
+    local target = getNearestPerfectDistance(dist)
+    local diff = dist - target
+    local absDiff = math.abs(diff)
+
+    local vel = root.AssemblyLinearVelocity or root.Velocity
+    local yVel = vel.Y
+    local airborne = (yVel > MIN_JUMP_VELOCITY) or isAirborne(hum)
+
+    -- Auto-jump entering the pre-window
+    if not airborne then
+        local entering = (diff > 0)
+            and (diff <= AUTOJUMP_PREWINDOW)
+            and wasOutside
+        if entering and (tick() - lastJumpAssistAt > AUTOJUMP_COOLDOWN) then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            lastJumpAssistAt = tick()
+            wasOutside = false
+        elseif diff > AUTOJUMP_PREWINDOW then
+            wasOutside = true
+        elseif diff < 0 then
+            wasOutside = false
+        end
+    end
+
+    -- Auto-shoot once per jump at/near perfect
+    if airborne and not (SINGLE_SHOT_PER_JUMP and perJumpShotDone) then
+        local predictedPos = root.Position + vel * dt
+        local pDist = planarDistance(predictedPos, refPos)
+        local pTarget = getNearestPerfectDistance(pDist)
+
+        if
+            (math.abs(pDist - pTarget) <= (PERFECT_TOL * PREDICTIVE_BIAS))
+            or (absDiff <= PERFECT_TOL)
+        then
+            local aimPos = smartAim(rim)
+            local dir = (aimPos - head.Position).Unit
+            local shootFrom = root.Position + dir * 4
+            fireShootRemote(aimPos, shootFrom, target)
+            perJumpShotDone = true
+        end
+    end
+end)
+
+-- Reset flags when landing/running
+task.spawn(function()
+    local lastState
+    while task.wait(0.02) do
+        local hum = plr.Character
+            and plr.Character:FindFirstChildOfClass('Humanoid')
+        if hum then
+            local st = hum:GetState()
+            if
+                st ~= lastState
+                and (
+                    st == Enum.HumanoidStateType.Landed
+                    or st == Enum.HumanoidStateType.Running
+                )
+            then
+                resetJumpFlags()
+            end
+            lastState = st
+        end
+    end
+end)
+
+-- ///////////////////////////////////////
+-- // LIVE GUI: Distance → Power Editor
+-- ///////////////////////////////////////
+pcall(function()
+    local gui = Instance.new('ScreenGui')
+    gui.Name = 'DistancePowerEditor'
+    gui.ResetOnSpawn = false
+    gui.Parent = CoreGui
+
+    local main = Instance.new('Frame')
+    main.Size = UDim2.new(0, 420, 0, 500)
+    main.Position = UDim2.new(0, 20, 0, 20)
+    main.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    main.BorderSizePixel = 0
+    main.Parent = gui
+    Instance.new('UICorner', main).CornerRadius = UDim.new(0, 12)
+
+    local title = Instance.new('TextLabel')
+    title.Size = UDim2.new(1, 0, 0, 44)
+    title.BackgroundTransparency = 1
+    title.Text = 'Distance → Power Editor'
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 20
+    title.Parent = main
+
+    local distBox = Instance.new('TextBox')
+    distBox.PlaceholderText = 'Distance (e.g. 54.68)'
+    distBox.Size = UDim2.new(0.48, -5, 0, 34)
+    distBox.Position = UDim2.new(0, 12, 0, 56)
+    distBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    distBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    distBox.ClearTextOnFocus = false
+    distBox.Parent = main
+    Instance.new('UICorner', distBox).CornerRadius = UDim.new(0, 6)
+
+    local powerBox = Instance.new('TextBox')
+    powerBox.PlaceholderText = 'Power (e.g. 75)'
+    powerBox.Size = UDim2.new(0.48, -5, 0, 34)
+    powerBox.Position = UDim2.new(0.52, 5, 0, 56)
+    powerBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    powerBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    powerBox.ClearTextOnFocus = false
+    powerBox.Parent = main
+    Instance.new('UICorner', powerBox).CornerRadius = UDim.new(0, 6)
+
+    -- sanitize inputs on focus lost
+    distBox.FocusLost:Connect(function()
+        distBox.Text = distBox.Text:gsub('[^%d%.]', '')
+    end)
+    powerBox.FocusLost:Connect(function()
+        powerBox.Text = powerBox.Text:gsub('[^%d]', '')
+    end)
+
+    local addBtn = Instance.new('TextButton')
+    addBtn.Size = UDim2.new(1, -24, 0, 36)
+    addBtn.Position = UDim2.new(0, 12, 0, 98)
+    addBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+    addBtn.Text = 'Add / Update'
+    addBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    addBtn.Font = Enum.Font.GothamMedium
+    addBtn.Parent = main
+    Instance.new('UICorner', addBtn).CornerRadius = UDim.new(0, 8)
+
+    local scroll = Instance.new('ScrollingFrame')
+    scroll.Size = UDim2.new(1, -24, 1, -160)
+    scroll.Position = UDim2.new(0, 12, 0, 144)
+    scroll.BackgroundTransparency = 1
+    scroll.ScrollBarThickness = 6
+    scroll.Parent = main
+
+    local listLayout = Instance.new('UIListLayout')
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Padding = UDim.new(0, 6)
+    listLayout.Parent = scroll
+
+    local function refreshList()
+        for _, child in ipairs(scroll:GetChildren()) do
+            if child:IsA('Frame') then
+                child:Destroy()
+            end
+        end
+
+        -- stable sorted order by distance
+        local keys = {}
+        for dist, _ in pairs(DISTANCE_TO_POWER) do
+            table.insert(keys, dist)
+        end
+        table.sort(keys, function(a, b)
+            return a < b
+        end)
+
+        for i, dist in ipairs(keys) do
+            local pow = DISTANCE_TO_POWER[dist]
+            local row = Instance.new('Frame')
+            row.Size = UDim2.new(1, 0, 0, 38)
+            row.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+            row.LayoutOrder = i
+            row.Parent = scroll
+            Instance.new('UICorner', row).CornerRadius = UDim.new(0, 6)
+
+            local distLbl = Instance.new('TextLabel')
+            distLbl.Size = UDim2.new(0.55, 0, 1, 0)
+            distLbl.BackgroundTransparency = 1
+            distLbl.Text = string.format('Perfect distance: %.2f', dist)
+            distLbl.TextColor3 = Color3.fromRGB(200, 255, 200)
+            distLbl.Font = Enum.Font.Code
+            distLbl.TextXAlignment = Enum.TextXAlignment.Left
+            distLbl.Parent = row
+            Instance.new('UIPadding', distLbl).PaddingLeft = UDim.new(0, 8)
+
+            local powLbl = Instance.new('TextLabel')
+            powLbl.Size = UDim2.new(0.25, 0, 1, 0)
+            powLbl.Position = UDim2.new(0.55, 0, 0, 0)
+            powLbl.BackgroundTransparency = 1
+            powLbl.Text = ('Power: %s'):format(tostring(pow))
+            powLbl.TextColor3 = Color3.fromRGB(255, 200, 200)
+            powLbl.Font = Enum.Font.Code
+            powLbl.Parent = row
+
+            local delBtn = Instance.new('TextButton')
+            delBtn.Size = UDim2.new(0.18, -4, 0, 28)
+            delBtn.Position = UDim2.new(0.82, 2, 0, 5)
+            delBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+            delBtn.Text = 'X'
+            delBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            delBtn.Parent = row
+            Instance.new('UICorner', delBtn).CornerRadius = UDim.new(0, 6)
+
+            delBtn.MouseButton1Click:Connect(function()
+                DISTANCE_TO_POWER[dist] = nil
+                for k = #PERFECT_DISTANCES, 1, -1 do
+                    if PERFECT_DISTANCES[k] == dist then
+                        table.remove(PERFECT_DISTANCES, k)
+                    end
+                end
+                getgenv().DISTANCE_TO_POWER = DISTANCE_TO_POWER
+                getgenv().PERFECT_DISTANCES = PERFECT_DISTANCES
+                refreshList()
+            end)
+        end
+
+        scroll.CanvasSize =
+            UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 10)
+    end
+
+    addBtn.MouseButton1Click:Connect(function()
+        local dRaw = tonumber(distBox.Text)
+        local pRaw = tonumber(powerBox.Text)
+        if not dRaw or not pRaw then
+            notify('⚠️ Invalid input (numbers only)')
+            return
+        end
+
+        -- normalize distance to 2 decimals to de-dupe keys visually & logically
+        local dist = tonumber(string.format('%.2f', dRaw))
+        local pow = math.floor(pRaw + 0.5)
+
+        DISTANCE_TO_POWER[dist] = pow
+        getgenv().DISTANCE_TO_POWER = DISTANCE_TO_POWER
+
+        -- keep PERFECT_DISTANCES synced
+        local found = false
+        for _, d in ipairs(PERFECT_DISTANCES) do
+            if d == dist then
+                found = true
+                break
+            end
+        end
+        if not found then
+            table.insert(PERFECT_DISTANCES, dist)
+        end
+        getgenv().PERFECT_DISTANCES = PERFECT_DISTANCES
+
+        distBox.Text = ''
+        powerBox.Text = ''
+        refreshList()
+    end)
+
+    local close = Instance.new('TextButton')
+    close.Size = UDim2.new(0, 30, 0, 30)
+    close.Position = UDim2.new(1, -38, 0, 8)
+    close.BackgroundTransparency = 1
+    close.Text = 'X'
+    close.TextColor3 = Color3.fromRGB(220, 220, 220)
+    close.Font = Enum.Font.GothamBold
+    close.Parent = main
+    close.MouseButton1Click:Connect(function()
+        gui:Destroy()
+    end)
+
+    -- Draggable
+    local dragging, dragStart, startPos
+    main.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = inp.Position
+            startPos = main.Position
+        end
+    end)
+    main.InputChanged:Connect(function(inp)
+        if
+            dragging
+            and inp.UserInputType == Enum.UserInputType.MouseMovement
+        then
+            local delta = inp.Position - dragStart
+            main.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    main.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+
+    refreshList()
+end)
