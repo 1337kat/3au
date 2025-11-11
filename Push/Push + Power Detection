@@ -1,4 +1,4 @@
---[[ 🟢 Push Logic Linked to Power Value ]]
+--[[ 🟢 Standard Push Logic (Power-linked Distances) ]]
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -8,10 +8,10 @@ local plr = Players.LocalPlayer
 local char = plr.Character or plr.CharacterAdded:Wait()
 
 -- === CONFIG ===
-local DISTANCE_SETS = {
-	[75] = { 54.97 },            -- Only 54.97 allowed
-	[80] = { 61.53 },            -- Only 61.53 allowed
-	[85] = { 68.10 },            -- Only 68.10 allowed
+local POWER_TO_DISTANCE = {
+	[75] = 54.97,
+	[80] = 61.53,
+	[85] = 68.10
 }
 local CLAMP_RADIUS = 1
 local ACTIVE_RANGE_MAIN = 90
@@ -24,7 +24,7 @@ local function hasBall()
 	return c and (c:FindFirstChild("Basketball") or c:FindFirstChild("Ball"))
 end
 
--- === DETECT CURRENT POWER ===
+-- === POWER TRACKER ===
 local ev = char:WaitForChild("E_V")
 local power = ev:WaitForChild("Power")
 
@@ -68,7 +68,7 @@ UserInputService.InputEnded:Connect(function(i, gp)
 	end
 end)
 
--- === SMART KEY CHECK BASED ON POWER ===
+-- === STANDARD PUSH KEYS ===
 local function shouldPush()
 	local count = 0
 	for _, v in pairs(moveKeys) do
@@ -76,31 +76,7 @@ local function shouldPush()
 			count += 1
 		end
 	end
-
-	-- === Power-Specific Logic ===
-	if currentPower == 75 then
-		-- All keys allowed for 54.97 (if distance set matches)
-		return count > 0
-	elseif currentPower == 80 or currentPower == 85 then
-		-- Only allow single-key side push (A or D)
-		return count == 1 and (moveKeys.A or moveKeys.D)
-	end
-	return false
-end
-
--- === PERFECT DISTANCE HELPER ===
-local function nearestPerfectDistance(current)
-	local allowed = DISTANCE_SETS[currentPower]
-	if not allowed then return nil end
-
-	local n, best
-	for _, pd in ipairs(allowed) do
-		local diff = math.abs(pd - current)
-		if not best or diff < best then
-			n, best = pd, diff
-		end
-	end
-	return n
+	return count == 1 and (moveKeys.A or moveKeys.D)
 end
 
 -- === MAIN LOOP ===
@@ -111,7 +87,7 @@ RunService.RenderStepped:Connect(function()
 	local root = c and c:FindFirstChild("HumanoidRootPart")
 	if not (hum and root) then return end
 
-	-- Only push if you have the ball
+	-- Stop pushing if no ball
 	if not hasBall() then
 		smoothBias = Vector3.zero
 		return
@@ -123,8 +99,11 @@ RunService.RenderStepped:Connect(function()
 		return
 	end
 
-	local target = nearestPerfectDistance(dist)
-	if not target then return end
+	local target = POWER_TO_DISTANCE[currentPower]
+	if not target then
+		smoothBias = Vector3.zero
+		return
+	end
 
 	local diff = dist - target
 	local absDiff = math.abs(diff)
