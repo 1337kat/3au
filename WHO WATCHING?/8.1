@@ -1,0 +1,498 @@
+--// =====================================================================================
+--//  SPECTATOR HUD [v3.7 FULL + Keypad Overlay + Cursor Dot]  –  PLAYER-LEAVE FIX
+--// =====================================================================================
+
+local Players = game:GetService('Players')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local RunService = game:GetService('RunService')
+local UserInputService = game:GetService('UserInputService')
+local TweenService = game:GetService('TweenService')
+local CoreGui = game:GetService('CoreGui')
+local Camera = workspace.CurrentCamera
+
+local LP = Players.LocalPlayer
+local Root = ReplicatedStorage:FindFirstChild('ScreenWatch')
+
+--=== CONFIG ==============================================================
+local CFG = {
+    UIName = 'ForensicHUD_v3p7_Full',
+    LerpAlpha = 0.55,
+    UpdateHz = 10,
+    Match = { PosEPS = 5, AngEPSDot = 0.85 },
+    Color = {
+        Fg = Color3.fromRGB(230, 230, 230),
+        Soft = Color3.fromRGB(35, 35, 35),
+        Red = Color3.fromRGB(255, 60, 60),
+        White = Color3.fromRGB(255, 255, 255),
+        Pulse = Color3.fromRGB(60, 255, 60), -- green pulse
+    },
+    ListAnchor = UDim2.new(1, -20, 0.5, -90),
+    ListSize = UDim2.fromOffset(220, 180),
+    LabelWidth = 180,
+    ButtonSize = UDim2.fromOffset(28, 28),
+
+    KeypadPos = UDim2.new(0, 22, 1, -126),
+    KeySize = Vector2.new(36, 30),
+    KeyTweenDur = 0.07,
+    KeyActive = Color3.fromRGB(60, 255, 60),
+}
+
+--=== CLEANUP =============================================================
+local old = CoreGui:FindFirstChild(CFG.UIName)
+if old then
+    old:Destroy()
+end
+
+--=== GUI ROOT ============================================================
+local gui = Instance.new('ScreenGui')
+gui.Name, gui.IgnoreGuiInset, gui.ResetOnSpawn = CFG.UIName, true, false
+gui.Parent = CoreGui
+
+--=== SPECTATE CONTROL PANEL ==============================================
+local controlWrap = Instance.new('Frame')
+controlWrap.AnchorPoint = Vector2.new(1, 0.5)
+controlWrap.Position = UDim2.new(1, -22, 0.5, 0)
+controlWrap.Size = UDim2.fromOffset(280, 40)
+controlWrap.BackgroundTransparency = 1
+controlWrap.Visible = false
+controlWrap.Parent = gui
+
+local hlist = Instance.new('UIListLayout')
+hlist.FillDirection, hlist.HorizontalAlignment, hlist.VerticalAlignment =
+    Enum.FillDirection.Horizontal,
+    Enum.HorizontalAlignment.Center,
+    Enum.VerticalAlignment.Center
+hlist.Padding = UDim.new(0, 6)
+hlist.Parent = controlWrap
+
+local function makeButton(t)
+    local b = Instance.new('TextButton')
+    b.Size, b.BackgroundColor3, b.Text, b.TextColor3 =
+        CFG.ButtonSize, CFG.Color.Soft, t, CFG.Color.Fg
+    b.Font, b.TextSize = Enum.Font.GothamBold, 16
+    Instance.new('UICorner', b)
+    local s = Instance.new('UIStroke', b)
+    s.Thickness, s.Color = 1, Color3.fromRGB(80, 80, 80)
+    return b
+end
+
+local btnPrev = makeButton('◀')
+btnPrev.Parent = controlWrap
+local lbl = Instance.new('TextLabel')
+lbl.Size, lbl.BackgroundTransparency, lbl.TextColor3 =
+    UDim2.fromOffset(CFG.LabelWidth, 28), 1, CFG.Color.Fg
+lbl.Font, lbl.TextSize, lbl.Text = Enum.Font.GothamBold, 14, 'Watching: —'
+lbl.Parent = controlWrap
+local btnNext = makeButton('▶')
+btnNext.Parent = controlWrap
+
+--=== WATCHING LIST PANEL =================================================
+local namesPanel = Instance.new('Frame')
+namesPanel.AnchorPoint, namesPanel.Position, namesPanel.Size =
+    Vector2.new(1, 0.5), CFG.ListAnchor, CFG.ListSize
+namesPanel.BackgroundTransparency = 1
+namesPanel.Parent = gui
+
+local title = Instance.new('TextLabel')
+title.Size, title.Position, title.BackgroundTransparency =
+    UDim2.new(1, -12, 0, 24), UDim2.new(0, 6, 0, 6), 1
+title.Font, title.TextColor3, title.TextXAlignment, title.TextSize =
+    Enum.Font.GothamBold, CFG.Color.Fg, Enum.TextXAlignment.Left, 14
+title.Text = 'Viewers: 0'
+title.Parent = namesPanel
+
+local listHolder = Instance.new('ScrollingFrame')
+listHolder.Size, listHolder.Position, listHolder.BackgroundTransparency =
+    UDim2.new(1, -12, 1, -40), UDim2.new(0, 6, 0, 36), 1
+listHolder.BorderSizePixel, listHolder.ScrollBarThickness = 0, 6
+listHolder.CanvasSize = UDim2.new()
+listHolder.Parent = namesPanel
+
+local layout = Instance.new('UIListLayout')
+layout.Padding, layout.SortOrder = UDim.new(0, 6), Enum.SortOrder.LayoutOrder
+layout.Parent = listHolder
+layout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+    listHolder.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y)
+end)
+
+--=== KEYPAD HUD ==========================================================
+local keypad = Instance.new('Frame')
+keypad.Size, keypad.Position, keypad.BackgroundTransparency =
+    UDim2.fromOffset(200, 92), CFG.KeypadPos, 0.35
+keypad.BackgroundColor3, keypad.Visible = CFG.Color.Soft, false
+keypad.Parent = gui
+Instance.new('UICorner', keypad).CornerRadius = UDim.new(0, 8)
+
+local function makeKey(x, y, txt)
+    local k = Instance.new('TextLabel')
+    k.Size, k.Position =
+        UDim2.fromOffset(CFG.KeySize.X, CFG.KeySize.Y), UDim2.fromOffset(x, y)
+    k.BackgroundColor3, k.TextColor3, k.Font, k.TextSize, k.Text =
+        CFG.Color.Soft, CFG.Color.Fg, Enum.Font.GothamBold, 14, txt
+    k.Parent = keypad
+    Instance.new('UICorner', k).CornerRadius = UDim.new(0, 6)
+    return k
+end
+
+local keyW, keyA, keyS, keyD =
+    makeKey(82, 0, 'W'),
+    makeKey(40, 34, 'A'),
+    makeKey(82, 34, 'S'),
+    makeKey(124, 34, 'D')
+local mL, mM, mR =
+    makeKey(0, 68, 'L'), makeKey(82, 68, 'M'), makeKey(164, 68, 'R')
+local keyMap =
+    { W = keyW, A = keyA, S = keyS, D = keyD, Left = mL, Middle = mM, Right = mR }
+
+local function pulseKey(k, active)
+    TweenService:Create(
+        k,
+        TweenInfo.new(CFG.KeyTweenDur),
+        { BackgroundColor3 = active and CFG.KeyActive or CFG.Color.Soft }
+    ):Play()
+end
+
+--=== CURSOR DOT ==========================================================
+local dot = Instance.new('Frame')
+dot.Size, dot.AnchorPoint = UDim2.fromOffset(8, 8), Vector2.new(0.5, 0.5)
+dot.BackgroundColor3, dot.BackgroundTransparency, dot.Visible, dot.ZIndex =
+    CFG.Color.White, 0.1, false, 10
+dot.Parent = gui
+Instance.new('UICorner', dot).CornerRadius = UDim.new(1, 0)
+
+local flashCooldown = 0
+
+--=== HELPERS =============================================================
+local function getHRP(plr)
+    if not plr or not plr.Character then
+        return nil
+    end
+    return plr.Character:FindFirstChild('HumanoidRootPart')
+end
+local function nodeFor(p)
+    if not (Root and p) then
+        return nil
+    end
+    return Root:FindFirstChild(p.Name)
+end
+local function camVal(p)
+    local n = nodeFor(p)
+    if not n then
+        return nil
+    end
+    local c = n:FindFirstChild('Camera')
+    return c and c.Value
+end
+local function camMatch(a, b)
+    if not (a and b) then
+        return false
+    end
+    local d = (a.Position - b.Position).Magnitude
+    local posOk = d <= CFG.Match.PosEPS * (1 + d / 20)
+    return posOk and a.LookVector:Dot(b.LookVector) >= CFG.Match.AngEPSDot
+end
+
+--=== CORE STATE ==========================================================
+local spectating, currentTarget = false, nil
+local list, idx = {}, 0 -- list rebuilt on every toggle / next/prev
+local WatcherCache, prevList = {}, {}
+
+--=== PLAYER-LEAVE HANDLING ===============================================
+Players.PlayerRemoving:Connect(function(plr)
+    -- purge cache entry
+    if WatcherCache[plr] then
+        WatcherCache[plr] = nil
+    end
+
+    -- if we were watching the leaver → stop or switch
+    if currentTarget == plr then
+        -- find next alive player (or stop)
+        list = {} -- force rebuild
+        idx = 0
+        local nextAlive = closest()
+        if nextAlive then
+            watch(nextAlive)
+        else
+            resetSelf()
+        end
+    end
+end)
+
+--=== WATCHERS LIST =======================================================
+local function whoWatchingYou()
+    local now = tick()
+    local cached = WatcherCache[LP]
+    if cached and now - cached.t < 1 then
+        return cached.l
+    end
+
+    local arr, myCF = {}, camVal(LP)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and camMatch(camVal(p), myCF) then
+            table.insert(arr, p.Name)
+        end
+    end
+    table.sort(arr, function(a, b)
+        return a:lower() < b:lower()
+    end)
+    WatcherCache[LP] = { l = arr, t = now }
+    return arr
+end
+
+local function renderWatchingList(l)
+    if #l == #prevList then
+        local same = true
+        for i, v in ipairs(l) do
+            if v ~= prevList[i] then
+                same = false
+                break
+            end
+        end
+        if same then
+            return
+        end
+    end
+
+    title.Text = ('Viewers: %d'):format(#l)
+    for _, c in ipairs(listHolder:GetChildren()) do
+        if c:IsA('TextLabel') or c:IsA('Frame') then
+            c:Destroy()
+        end
+    end
+
+    for _, n in ipairs(l) do
+        local rowFrame = Instance.new('Frame')
+        rowFrame.Size, rowFrame.BackgroundTransparency =
+            UDim2.new(1, -4, 0, 22), 1
+        rowFrame.Parent = listHolder
+
+        local row = Instance.new('TextLabel')
+        row.Size, row.BackgroundTransparency, row.TextXAlignment =
+            UDim2.fromScale(1, 1), 1, Enum.TextXAlignment.Left
+        row.Font, row.TextColor3, row.TextSize, row.Text =
+            Enum.Font.GothamBold, CFG.Color.Fg, 13, '  • ' .. n
+        row.Parent = rowFrame
+
+        if not table.find(prevList, n) then
+            local glow = Instance.new('Frame')
+            glow.Size, glow.BackgroundColor3, glow.BackgroundTransparency =
+                UDim2.new(0, 0, 1, 0), CFG.Color.Pulse, 0.4
+            glow.BorderSizePixel, glow.ZIndex = 0, rowFrame.ZIndex - 1
+            glow.Parent = rowFrame
+            TweenService:Create(
+                glow,
+                TweenInfo.new(
+                    0.35,
+                    Enum.EasingStyle.Quad,
+                    Enum.EasingDirection.Out
+                ),
+                { Size = UDim2.new(1, 0, 1, 0) }
+            ):Play()
+            task.delay(0.45, function()
+                TweenService:Create(
+                    glow,
+                    TweenInfo.new(
+                        0.35,
+                        Enum.EasingStyle.Sine,
+                        Enum.EasingDirection.Out
+                    ),
+                    { BackgroundTransparency = 0.25 }
+                ):Play()
+            end)
+        end
+    end
+    prevList = l
+end
+
+task.spawn(function()
+    while task.wait(1 / CFG.UpdateHz) do
+        renderWatchingList(whoWatchingYou())
+    end
+end)
+
+--=== TARGET SYSTEM =======================================================
+local function sortedOthers()
+    local arr = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character and getHRP(p) then
+            table.insert(arr, p)
+        end
+    end
+    table.sort(arr, function(a, b)
+        local A, B, my = getHRP(a), getHRP(b), getHRP(LP)
+        if not (A and B and my) then
+            return a.Name < b.Name
+        end
+        return (A.Position - my.Position).Magnitude
+            < (B.Position - my.Position).Magnitude
+    end)
+    return arr
+end
+
+local function closest()
+    local myHRP = getHRP(LP)
+    if not myHRP then
+        return nil
+    end
+    local best, bestD
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local hrp = getHRP(p)
+            if hrp then
+                local d = (hrp.Position - myHRP.Position).Magnitude
+                if not bestD or d < bestD then
+                    best, bestD = p, d
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function setLabelTarget(p)
+    lbl.Text = p and ('Watching: ' .. p.Name) or 'Watching: —'
+end
+local function setSpectateUIVisible(v)
+    controlWrap.Visible, keypad.Visible, dot.Visible = v, v, v
+end
+local function resetSelf()
+    local ch = LP.Character or LP.CharacterAdded:Wait()
+    local hum = ch:FindFirstChildWhichIsA('Humanoid')
+    if hum then
+        Camera.CameraType, Camera.CameraSubject = Enum.CameraType.Custom, hum
+    end
+    currentTarget, spectating = nil, false
+    setLabelTarget(nil)
+    setSpectateUIVisible(false)
+    dot.BackgroundColor3 = CFG.Color.White
+end
+
+local function watch(plr)
+    if not plr then
+        return
+    end
+    currentTarget, spectating = plr, true
+    Camera.CameraType = Enum.CameraType.Scriptable
+    setLabelTarget(plr)
+    setSpectateUIVisible(true)
+end
+
+local function nextTarget(delta)
+    -- ALWAYS rebuild the list – guarantees no dead players
+    list = sortedOthers()
+    if #list == 0 then
+        return
+    end
+
+    idx = idx + delta
+    if idx > #list then
+        idx = 1
+    elseif idx < 1 then
+        idx = #list
+    end
+    watch(list[idx])
+end
+
+btnNext.MouseButton1Click:Connect(function()
+    if spectating then
+        nextTarget(1)
+    end
+end)
+btnPrev.MouseButton1Click:Connect(function()
+    if spectating then
+        nextTarget(-1)
+    end
+end)
+
+--=== ONE-KEY TOGGLE (N) ==================================================
+UserInputService.InputBegan:Connect(function(i, gp)
+    if gp or i.KeyCode ~= Enum.KeyCode.N then
+        return
+    end
+    if spectating then
+        resetSelf()
+    else
+        list = sortedOthers()
+        if #list == 0 then
+            return
+        end
+        local c = closest() or list[1]
+        idx = table.find(list, c) or 1
+        watch(c)
+    end
+end)
+
+--=== CAMERA / KEYPAD / DOT LOOP ==========================================
+RunService.RenderStepped:Connect(function()
+    if not spectating or not currentTarget then
+        return
+    end
+
+    local node = nodeFor(currentTarget)
+    if not node then -- target node vanished (player left, etc.)
+        -- auto-switch to next alive player
+        nextTarget(1)
+        return
+    end
+
+    -- camera + FOV
+    local cam, fov =
+        node:FindFirstChild('Camera'), node:FindFirstChild('FieldOfView')
+    if cam and fov then
+        Camera.CFrame = Camera.CFrame:Lerp(cam.Value, CFG.LerpAlpha)
+        Camera.FieldOfView = fov.Value
+    end
+
+    -- keypad
+    for name, label in pairs(keyMap) do
+        local bv = node:FindFirstChild(name)
+        pulseKey(label, bv and bv.Value)
+    end
+
+    -- cursor dot
+    local m = node:FindFirstChild('MousePos')
+    if m and typeof(m.Value) == 'Vector3' then
+        local v = Camera:WorldToViewportPoint(m.Value)
+        dot.Visible = v.Z > 0
+        if v.Z > 0 then
+            dot.Position = UDim2.fromOffset(v.X, v.Y)
+        end
+    else
+        dot.Visible = false
+    end
+
+    -- flash green on any key press
+    local any = false
+    for name in pairs(keyMap) do
+        local bv = node:FindFirstChild(name)
+        if bv and bv.Value then
+            any = true
+            break
+        end
+    end
+    if any and tick() > flashCooldown then
+        TweenService
+            :Create(
+                dot,
+                TweenInfo.new(
+                    0.08,
+                    Enum.EasingStyle.Quad,
+                    Enum.EasingDirection.Out
+                ),
+                { BackgroundColor3 = CFG.Color.Pulse }
+            )
+            :Play()
+        task.delay(0.08, function()
+            if spectating and currentTarget then
+                TweenService:Create(
+                    dot,
+                    TweenInfo.new(0.2),
+                    { BackgroundColor3 = CFG.Color.White }
+                ):Play()
+            end
+        end)
+        flashCooldown = tick() + 0.12
+    end
+end)
+
+resetSelf()
