@@ -1,4 +1,217 @@
 task.spawn(function()
+--========================================================
+--  RIM DOT SYSTEM (RE-EXEC SAFE + MANUAL HEIGHT OFFSET)
+--========================================================
+
+local getgenv = getgenv or function() return _G end
+local env = getgenv()
+
+-- Cleanup old version
+if env.RIM_DOT_CLEANUP then
+    pcall(env.RIM_DOT_CLEANUP)
+    env.RIM_DOT_CLEANUP = nil
+end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+
+local localPlayer = Players.LocalPlayer
+local playerMouse = localPlayer and localPlayer:GetMouse()
+
+--========================================================
+--  MANUAL HEIGHT OFFSET (EDIT THIS, THEN RE-EXEC)
+--========================================================
+local RimDotHeightOffset = 41.45
+
+-- Rim size ID
+local RimSize = Vector3.new(3.632131576538086, 0.5587897300720215, 3.632131576538086)
+
+-- State
+local RimDots = {}
+local DotsEnabled = true
+local holdingF = false
+local AIM_STEP_NAME = "RimDot_AimLock"
+
+local connections = {}
+local function bind(conn)
+    table.insert(connections, conn)
+    return conn
+end
+
+--========================================================
+--  DOT MANAGEMENT
+--========================================================
+local function AddRimDot(rim)
+    if RimDots[rim] then return end
+
+    local dot = Drawing.new("Circle")
+    dot.Radius = 4
+    dot.Filled = true
+    dot.Color = Color3.new(1, 0, 0)
+    dot.Visible = true
+
+    RimDots[rim] = dot
+end
+
+local function RemoveRimDot(rim)
+    local dot = RimDots[rim]
+    if dot then
+        pcall(function()
+            if dot.Remove then dot:Remove()
+            elseif dot.Destroy then dot:Destroy() end
+        end)
+        RimDots[rim] = nil
+    end
+end
+
+--========================================================
+--  UPDATE DOT POSITIONS
+--========================================================
+bind(RunService.RenderStepped:Connect(function()
+    if not DotsEnabled then
+        for _, dot in pairs(RimDots) do
+            dot.Visible = false
+        end
+        return
+    end
+
+    for rim, dot in pairs(RimDots) do
+        if rim:IsDescendantOf(workspace) then
+            local worldPos = rim.Position + Vector3.new(0, RimDotHeightOffset, 0)
+            local screenPos, onScreen = Camera:WorldToViewportPoint(worldPos)
+
+            dot.Position = Vector2.new(screenPos.X, screenPos.Y)
+            dot.Visible = onScreen
+        else
+            dot.Visible = false
+        end
+    end
+end))
+
+-- Detect new rims
+bind(workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("BasePart") and obj.Name == "Rim" and obj.Size == RimSize then
+        AddRimDot(obj)
+    end
+end))
+
+bind(workspace.DescendantRemoving:Connect(function(obj)
+    if RimDots[obj] then RemoveRimDot(obj) end
+end))
+
+-- Pre-existing rims
+for _, obj in ipairs(workspace:GetDescendants()) do
+    if obj:IsA("BasePart") and obj.Name == "Rim" and obj.Size == RimSize then
+        AddRimDot(obj)
+    end
+end
+
+-- Toggle dots (O)
+bind(UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.O then
+        DotsEnabled = not DotsEnabled
+    end
+end))
+
+--========================================================
+--       *** FIXED SECTION — PLAYER PROXIMITY RIM ***
+--========================================================
+
+local function GetClosestRimToPlayer()
+    local char = localPlayer.Character
+    if not char then return nil end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local closest, bestDist = nil, math.huge
+
+    for rim in pairs(RimDots) do
+        if rim:IsDescendantOf(workspace) then
+            local dist = (rim.Position - hrp.Position).Magnitude
+            if dist < bestDist then
+                bestDist = dist
+                closest = rim
+            end
+        end
+    end
+
+    return closest
+end
+
+local function AimStep()
+    if not holdingF then return end
+
+    local rim = GetClosestRimToPlayer()
+    if rim then
+        local aimPos = rim.Position + Vector3.new(0, RimDotHeightOffset, 0)
+        local camPos = Camera.CFrame.Position
+        Camera.CFrame = CFrame.new(camPos, aimPos)
+    end
+end
+
+bind(UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.F then
+        holdingF = true
+        RunService:BindToRenderStep(AIM_STEP_NAME, Enum.RenderPriority.Camera.Value + 1, AimStep)
+    end
+end))
+
+bind(UIS.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.F then
+        holdingF = false
+        RunService:UnbindFromRenderStep(AIM_STEP_NAME)
+    end
+end))
+
+--========================================================
+--  RE-EXEC CLEANUP
+--========================================================
+env.RIM_DOT_CLEANUP = function()
+    pcall(function()
+        RunService:UnbindFromRenderStep(AIM_STEP_NAME)
+    end)
+
+    for _, conn in ipairs(connections) do
+        pcall(function()
+            if conn.Disconnect then conn:Disconnect() end
+        end)
+    end
+
+    for rim, dot in pairs(RimDots) do
+        pcall(function()
+            if dot.Remove then dot:Remove()
+            elseif dot.Destroy then dot:Destroy() end
+        end)
+        RimDots[rim] = nil
+    end
+
+    connections = {}
+end
+
+end)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+task.spawn(function()
 --[[ 🟢 Push Logic Standalone (Ball Check Added) ]]
 local Players = game:GetService('Players')
 local RunService = game:GetService('RunService')
