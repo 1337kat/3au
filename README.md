@@ -1,6 +1,6 @@
 # StreetbaII
 ```lua
-loadstring(game:HttpGet(('https://raw.githubusercontent.com/1337kat/3au/refs/heads/main/main'),true))()
+loadstring(game:HttpGet(('https://raw.githubusercontent.com/1337kat/3au/main/main'),true))()
 ```
 
 # Bypass Adonis Anti-cheat
