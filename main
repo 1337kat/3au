@@ -22,8 +22,7 @@ end
 end)
 
 
-
--- // AutoGuard
+-- // Autoguard
 task.spawn(function()
 local isFollowing = false
 local hasBall = false
@@ -112,7 +111,7 @@ local function checkForBall()
 end
 
 UserInputService.InputBegan:Connect(function(input, gpe)
-    if input.KeyCode == Enum.KeyCode.F and not gpe then
+    if input.KeyCode == Enum.KeyCode.G and not gpe then
         isFollowing = not isFollowing
         local character = Players.LocalPlayer.Character
         if isFollowing and character then
@@ -129,7 +128,13 @@ end)
 
 
 
--- Main Script
+
+
+
+
+
+
+-- // Main Script
 task.spawn(function()
 
     local Players = game:GetService("Players")
